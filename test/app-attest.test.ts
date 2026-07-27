@@ -12,6 +12,7 @@ import { encode } from "cbor-x";
 import { describe, expect, it } from "vitest";
 import type { AppConfig } from "../src/apps";
 import {
+  fraudReceiptRequestBody,
   fraudStatusForHttpFailure,
   isProvisioningEligibleFraudStatus,
 } from "../src/appattest/ProvisioningObject";
@@ -248,6 +249,19 @@ describe("App Attest verifier", () => {
     expect(isProvisioningEligibleFraudStatus("blocked")).toBe(false);
     expect(isProvisioningEligibleFraudStatus("pending")).toBe(true);
     expect(isProvisioningEligibleFraudStatus("accepted")).toBe(true);
+  });
+
+  it("decodes a stored fraud receipt to the exact binary request body", async () => {
+    const receipt = new Uint8Array([0x30, 0x80, 0x06, 0x09, 0xff, 0x00]);
+    const request = new Request("https://data.appattest.apple.com", {
+      method: "POST",
+      body: fraudReceiptRequestBody(base64(receipt)),
+    });
+
+    expect(new Uint8Array(await request.arrayBuffer())).toEqual(receipt);
+    expect(() => fraudReceiptRequestBody("not canonical base64")).toThrow(
+      "Invalid App Attest receipt",
+    );
   });
 
 });

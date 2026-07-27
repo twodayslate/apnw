@@ -538,7 +538,7 @@ export class ProvisioningObject extends DurableObject<Env> {
             Authorization: token,
             "Content-Type": "application/octet-stream",
           },
-          body: row.fraud_receipt,
+          body: fraudReceiptRequestBody(row.fraud_receipt),
           signal: controller.signal,
         });
       } finally {
@@ -578,7 +578,7 @@ export class ProvisioningObject extends DurableObject<Env> {
       }
 
       const updatedReceiptText = (await response.text()).trim();
-      const updatedReceipt = decodeCanonicalBase64(updatedReceiptText);
+      const updatedReceipt = decodeFraudReceiptBase64(updatedReceiptText);
       const claims = await verifyAppAttestReceipt({
         expectedAppID: `${this.env.APNS_TEAM_ID}.${app.bundleID}`,
         expectedPublicKeySpki: row.public_key_spki,
@@ -725,7 +725,11 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function decodeCanonicalBase64(value: string): Uint8Array {
+export function fraudReceiptRequestBody(value: string): ArrayBuffer {
+  return decodeFraudReceiptBase64(value).slice().buffer as ArrayBuffer;
+}
+
+function decodeFraudReceiptBase64(value: string): Uint8Array {
   if (
     value.length === 0 ||
     value.length % 4 !== 0 ||
