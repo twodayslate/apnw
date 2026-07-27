@@ -10,6 +10,7 @@
     "deploy:production": "wrangler deploy --env production",
     "dev": "wrangler dev",
     "test": "vitest run",
+    "load-test": "node scripts/load-test.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "types": "wrangler types"
