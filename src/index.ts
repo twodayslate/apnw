@@ -52,6 +52,8 @@ interface Completed {
   details: LogDetails;
 }
 
+const QUEUE_MESSAGE_CONCURRENCY = 4;
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const context: RequestContext = {
@@ -87,76 +89,91 @@ export default {
       batch.retryAll({ delaySeconds: 60 });
       return;
     }
-    for (const message of batch.messages) {
-      const body = message.body;
-      if (!isDeliveryQueueMessage(body)) {
-        message.ack();
-        emitTelemetry(env, queueContext(env), {
-          outcome: "invalid_queue_message",
-          httpStatus: 400,
-        });
-        continue;
-      }
-      const app = getApp(body.appID);
-      if (!app) {
-        message.ack();
-        emitTelemetry(env, queueContext(env), {
-          outcome: "invalid_queue_message",
-          httpStatus: 400,
-        });
-        continue;
-      }
-      const context = queueContext(env, body.appID);
-      try {
-        context.channelRef = await channelReference(
-          env.LOG_CORRELATION_KEY,
-          body.channelID,
-        );
-        const stub = env.CHANNELS.get(env.CHANNELS.idFromString(body.channelID));
-        const result = await stub.deliverBatch(
-          body.eventID,
-          body.batchID,
-          app,
-        );
-        if (result.retryable) {
-          message.retry({ delaySeconds: retryDelay(message.attempts) });
-        } else {
-          message.ack();
-        }
-        emitTelemetry(env, context, {
-          outcome:
-            result.retryable && message.attempts >= 10
-              ? "delivery_near_dlq"
-              : result.retryable
-                ? "delivery_retry"
-                : "delivered",
-          httpStatus: result.retryable ? 503 : 200,
-          ...(result.event ? { event: result.event } : {}),
-          acceptedCount: result.accepted,
-          failedCount: result.failed,
-          invalidTokenRemovalCount: result.invalidRemoved,
-          apnsReason: result.apnsReason,
-          apnsReasonCounts: result.apnsReasonCounts,
-          apnsStatus: result.apnsStatus,
-          ...(result.apnsRequestID
-            ? { apnsRequestID: result.apnsRequestID }
-            : {}),
-          apnsLatencyTotalMs: result.apnsLatencyTotalMs,
-          apnsLatencyMaxMs: result.apnsLatencyMaxMs,
-        });
-      } catch {
-        message.retry({ delaySeconds: retryDelay(message.attempts) });
-        emitTelemetry(env, context, {
-          outcome:
-            message.attempts >= 10
-              ? "exception_near_dlq"
-              : "delivery_exception",
-          httpStatus: 503,
-        });
-      }
+    for (
+      let offset = 0;
+      offset < batch.messages.length;
+      offset += QUEUE_MESSAGE_CONCURRENCY
+    ) {
+      await Promise.all(
+        batch.messages
+          .slice(offset, offset + QUEUE_MESSAGE_CONCURRENCY)
+          .map((message) => processQueueMessage(message, env)),
+      );
     }
   },
 } satisfies ExportedHandler<Env, DeliveryQueueMessage>;
+
+async function processQueueMessage(
+  message: Message<DeliveryQueueMessage>,
+  env: Env,
+): Promise<void> {
+  const body = message.body;
+  if (!isDeliveryQueueMessage(body)) {
+    message.ack();
+    emitTelemetry(env, queueContext(env), {
+      outcome: "invalid_queue_message",
+      httpStatus: 400,
+    });
+    return;
+  }
+  const app = getApp(body.appID);
+  if (!app) {
+    message.ack();
+    emitTelemetry(env, queueContext(env), {
+      outcome: "invalid_queue_message",
+      httpStatus: 400,
+    });
+    return;
+  }
+  const context = queueContext(env, body.appID);
+  try {
+    context.channelRef = await channelReference(
+      env.LOG_CORRELATION_KEY,
+      body.channelID,
+    );
+    const stub = env.CHANNELS.get(env.CHANNELS.idFromString(body.channelID));
+    const result = await stub.deliverBatch(
+      body.eventID,
+      body.batchID,
+      app,
+    );
+    if (result.retryable) {
+      message.retry({ delaySeconds: retryDelay(message.attempts) });
+    } else {
+      message.ack();
+    }
+    emitTelemetry(env, context, {
+      outcome:
+        result.retryable && message.attempts >= 10
+          ? "delivery_near_dlq"
+          : result.retryable
+            ? "delivery_retry"
+            : "delivered",
+      httpStatus: result.retryable ? 503 : 200,
+      ...(result.event ? { event: result.event } : {}),
+      acceptedCount: result.accepted,
+      failedCount: result.failed,
+      invalidTokenRemovalCount: result.invalidRemoved,
+      apnsReason: result.apnsReason,
+      apnsReasonCounts: result.apnsReasonCounts,
+      apnsStatus: result.apnsStatus,
+      ...(result.apnsRequestID
+        ? { apnsRequestID: result.apnsRequestID }
+        : {}),
+      apnsLatencyTotalMs: result.apnsLatencyTotalMs,
+      apnsLatencyMaxMs: result.apnsLatencyMaxMs,
+    });
+  } catch {
+    message.retry({ delaySeconds: retryDelay(message.attempts) });
+    emitTelemetry(env, context, {
+      outcome:
+        message.attempts >= 10
+          ? "exception_near_dlq"
+          : "delivery_exception",
+      httpStatus: 503,
+    });
+  }
+}
 
 async function route(
   request: Request,

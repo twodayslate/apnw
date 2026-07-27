@@ -104,6 +104,46 @@ describe("delivery queue", () => {
       }),
     );
   });
+
+  it("delivers independent channel messages concurrently", async () => {
+    const first = await queuedFixture(1);
+    const second = await queuedFixture(1);
+    let activeRequests = 0;
+    let maximumActiveRequests = 0;
+    let releaseRequests = (): void => undefined;
+    const release = new Promise<void>((resolve) => {
+      releaseRequests = resolve;
+    });
+    let bothStarted = (): void => undefined;
+    const started = new Promise<void>((resolve) => {
+      bothStarted = resolve;
+    });
+    vi.stubGlobal("fetch", async () => {
+      activeRequests += 1;
+      maximumActiveRequests = Math.max(
+        maximumActiveRequests,
+        activeRequests,
+      );
+      if (activeRequests === 2) bothStarted();
+      await release;
+      activeRequests -= 1;
+      return new Response(null, { status: 200 });
+    });
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const batch = createMessageBatch("apnw-dev-delivery", [
+      queueMessage("message-1", first.message),
+      queueMessage("message-2", second.message),
+    ]);
+    const processing = worker.queue(batch, env);
+
+    await started;
+    expect(maximumActiveRequests).toBe(2);
+    releaseRequests();
+    await processing;
+
+    const result = await getQueueResult(batch, createExecutionContext());
+    expect(result.explicitAcks).toEqual(["message-1", "message-2"]);
+  });
 });
 
 async function queuedFixture(targetCount: number): Promise<{
@@ -147,13 +187,26 @@ function queueBatch(
   attempts = 1,
 ): MessageBatch<DeliveryQueueMessage> {
   return createMessageBatch("apnw-dev-delivery", [
-    {
-      id: "message-1",
-      timestamp: new Date(),
-      attempts,
-      body,
-    },
+    queueMessage("message-1", body, attempts),
   ]);
+}
+
+function queueMessage(
+  id: string,
+  body: DeliveryQueueMessage,
+  attempts = 1,
+): {
+  id: string;
+  timestamp: Date;
+  attempts: number;
+  body: DeliveryQueueMessage;
+} {
+  return {
+    id,
+    timestamp: new Date(),
+    attempts,
+    body,
+  };
 }
 
 function randomSecret(): string {
