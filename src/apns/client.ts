@@ -1,7 +1,7 @@
 import type { AppConfig } from "../apps";
 import type { Env } from "../types";
 import type { ApnsPayload } from "./payload";
-import { getProviderToken } from "./jwt";
+import { getProviderToken, invalidateProviderToken } from "./jwt";
 
 export type ApnsReason =
   | "none"
@@ -56,64 +56,74 @@ export async function sendNotification(
       latencyMs: 0,
     };
   }
+  const host =
+    env.APNS_ENVIRONMENT === "production"
+      ? "api.push.apple.com"
+      : "api.sandbox.push.apple.com";
+  const collapseID = await collapseIdentifier(idempotencyKey);
   let response: Response;
-  try {
-    const providerToken = await getProviderToken(
-      env.APNS_TEAM_ID,
-      env.APNS_KEY_ID,
-      env.APNS_KEY_P8,
-    );
-    const host =
-      env.APNS_ENVIRONMENT === "production"
-        ? "api.push.apple.com"
-        : "api.sandbox.push.apple.com";
-    const collapseID = await collapseIdentifier(idempotencyKey);
-    response = await fetcher(
-      `https://${host}/3/device/${encodeURIComponent(deviceToken)}`,
-      {
-        method: "POST",
-        headers: {
-          authorization: `bearer ${providerToken}`,
-          "apns-collapse-id": collapseID,
-          "apns-expiration": String(Math.floor(Date.now() / 1_000) + 3_600),
-          "apns-priority": "10",
-          "apns-push-type": "alert",
-          "apns-topic": app.bundleID,
-          "content-type": "application/json",
+  let errorBody: { reason?: string; timestamp?: number };
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const providerToken = await getProviderToken(
+        env.APNS_TEAM_ID,
+        env.APNS_KEY_ID,
+        env.APNS_KEY_P8,
+      );
+      response = await fetcher(
+        `https://${host}/3/device/${encodeURIComponent(deviceToken)}`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `bearer ${providerToken}`,
+            "apns-collapse-id": collapseID,
+            "apns-expiration": String(Math.floor(Date.now() / 1_000) + 3_600),
+            "apns-priority": "10",
+            "apns-push-type": "alert",
+            "apns-topic": app.bundleID,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(10_000),
         },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(10_000),
-      },
-    );
-  } catch (error) {
-    const isTimeout =
-      error instanceof DOMException && error.name === "TimeoutError";
-    return {
-      accepted: false,
-      cleanup: "none",
-      configurationFailure: false,
-      retryable: true,
-      status: 0,
-      reason: isTimeout ? "request_timeout" : "network_error",
-      latencyMs: Date.now() - startedAt,
-    };
+      );
+    } catch (error) {
+      const isTimeout =
+        error instanceof DOMException && error.name === "TimeoutError";
+      return {
+        accepted: false,
+        cleanup: "none",
+        configurationFailure: false,
+        retryable: true,
+        status: 0,
+        reason: isTimeout ? "request_timeout" : "network_error",
+        latencyMs: Date.now() - startedAt,
+      };
+    }
+
+    const requestID = response.headers.get("apns-id") ?? undefined;
+    if (response.ok) {
+      return {
+        accepted: true,
+        cleanup: "none",
+        configurationFailure: false,
+        retryable: false,
+        status: response.status,
+        reason: "none",
+        ...(requestID ? { requestID } : {}),
+        latencyMs: Date.now() - startedAt,
+      };
+    }
+
+    errorBody = await readReason(response);
+    if (errorBody.reason === "ExpiredProviderToken" && attempt === 0) {
+      invalidateProviderToken(env.APNS_TEAM_ID, env.APNS_KEY_ID);
+      continue;
+    }
+    break;
   }
 
   const requestID = response.headers.get("apns-id") ?? undefined;
-  if (response.ok) {
-    return {
-      accepted: true,
-      cleanup: "none",
-      configurationFailure: false,
-      retryable: false,
-      status: response.status,
-      reason: "none",
-      ...(requestID ? { requestID } : {}),
-      latencyMs: Date.now() - startedAt,
-    };
-  }
-
-  const errorBody = await readReason(response);
   const rawReason = errorBody.reason;
   const reason = categorizeReason(response.status, rawReason);
   const configurationFailure =
@@ -133,7 +143,8 @@ export async function sendNotification(
     ...(typeof errorBody.timestamp === "number"
       ? { invalidationTimestamp: errorBody.timestamp }
       : {}),
-    retryable: response.status === 429 || response.status >= 500,
+    retryable:
+      configurationFailure || response.status === 429 || response.status >= 500,
     status: response.status,
     reason,
     ...(requestID ? { requestID } : {}),

@@ -40,6 +40,10 @@ export function clearProviderTokenCache(): void {
   cache.clear();
 }
 
+export function invalidateProviderToken(teamID: string, keyID: string): void {
+  cache.delete(`${teamID}:${keyID}`);
+}
+
 async function importPrivateKey(encodedP8: string): Promise<CryptoKey> {
   let pem: string;
   try {

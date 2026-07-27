@@ -357,7 +357,8 @@ describe("channel delivery state", () => {
       fingerprint: randomHex(),
       idempotencyKey: firstEventID,
     });
-    await stub.deliverBatch(firstEventID, 0, app);
+    const firstDelivery = await stub.deliverBatch(firstEventID, 0, app);
+    expect(firstDelivery.retryable).toBe(true);
 
     const secondEventID = crypto.randomUUID();
     await stub.publish({

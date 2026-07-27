@@ -158,6 +158,54 @@ describe("APNs provider", () => {
     });
   });
 
+  it("refreshes an expired provider token and retries once", async () => {
+    let requestCount = 0;
+    const result = await sendNotification(
+      await makeEnv("development"),
+      app,
+      "00112233",
+      buildPayload(app, "changed"),
+      "event-expired-token",
+      async () => {
+        requestCount += 1;
+        return requestCount === 1
+          ? Response.json(
+              { reason: "ExpiredProviderToken" },
+              { status: 403 },
+            )
+          : new Response(null, { status: 200 });
+      },
+    );
+
+    expect(requestCount).toBe(2);
+    expect(result).toMatchObject({
+      accepted: true,
+      retryable: false,
+    });
+  });
+
+  it("defers provider configuration failures instead of losing targets", async () => {
+    const result = await sendNotification(
+      await makeEnv("production"),
+      app,
+      "00112233",
+      buildPayload(app, "changed"),
+      "event-provider-failure",
+      async () =>
+        Response.json(
+          { reason: "InvalidProviderToken" },
+          { status: 403 },
+        ),
+    );
+
+    expect(result).toMatchObject({
+      accepted: false,
+      configurationFailure: true,
+      reason: "invalid_provider_token",
+      retryable: true,
+    });
+  });
+
   it("classifies cleanup without conflating topic errors", async () => {
     const now = Date.now();
     const unregistered = await sendNotification(
