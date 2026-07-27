@@ -127,7 +127,8 @@ async function processQueueMessage(
   }
   const context = queueContext(env, body.appID);
   try {
-    context.channelRef = await channelReference(
+    await attachChannelReference(
+      context,
       env.LOG_CORRELATION_KEY,
       body.channelID,
     );
@@ -577,7 +578,7 @@ async function resolveChannel(
 }> {
   const capability = readCapability(request);
   const name = await deriveChannelName(appID, capability);
-  context.channelRef = await channelReference(env.LOG_CORRELATION_KEY, name);
+  await attachChannelReference(context, env.LOG_CORRELATION_KEY, name);
   return {
     capability,
     name,
@@ -876,25 +877,69 @@ function emitTelemetry(
   context: RequestContext,
   details: LogDetails,
 ): void {
-  writeCompletionLog(
-    context,
-    details,
-    parseSampleRate(env.LOG_SAMPLE_RATE),
-  );
-  writeMetric(env, context, {
-    outcome: details.outcome,
-    httpStatus: details.httpStatus,
-    ...(details.event ? { event: details.event } : {}),
-    ...(details.apnsReason ? { apnsReason: details.apnsReason } : {}),
-    ...(details.idempotency ? { idempotency: details.idempotency } : {}),
-    targetCount: details.targetCount,
-    acceptedCount: details.acceptedCount,
-    failedCount: details.failedCount,
-    invalidTokenRemovalCount: details.invalidTokenRemovalCount,
-    apnsLatencyTotalMs: details.apnsLatencyTotalMs,
-    apnsLatencyMaxMs: details.apnsLatencyMaxMs,
-    registrationDelta: details.operationDelta,
-    tokenReplacementCount: details.tokenReplacementCount,
-  });
-  writeApnsReasonMetrics(env, context, details.apnsReasonCounts);
+  try {
+    writeCompletionLog(
+      context,
+      details,
+      parseSampleRate(env.LOG_SAMPLE_RATE),
+    );
+  } catch {
+    telemetryWarning(context, "completion_log_failed");
+  }
+  try {
+    writeMetric(env, context, {
+      outcome: details.outcome,
+      httpStatus: details.httpStatus,
+      ...(details.event ? { event: details.event } : {}),
+      ...(details.apnsReason ? { apnsReason: details.apnsReason } : {}),
+      ...(details.idempotency ? { idempotency: details.idempotency } : {}),
+      targetCount: details.targetCount,
+      acceptedCount: details.acceptedCount,
+      failedCount: details.failedCount,
+      invalidTokenRemovalCount: details.invalidTokenRemovalCount,
+      apnsLatencyTotalMs: details.apnsLatencyTotalMs,
+      apnsLatencyMaxMs: details.apnsLatencyMaxMs,
+      registrationDelta: details.operationDelta,
+      tokenReplacementCount: details.tokenReplacementCount,
+    });
+  } catch {
+    telemetryWarning(context, "analytics_write_failed");
+  }
+  try {
+    writeApnsReasonMetrics(env, context, details.apnsReasonCounts);
+  } catch {
+    telemetryWarning(context, "analytics_write_failed");
+  }
+}
+
+async function attachChannelReference(
+  context: RequestContext,
+  hmacSecret: string,
+  channelName: string,
+): Promise<void> {
+  try {
+    context.channelRef = await channelReference(hmacSecret, channelName);
+  } catch {
+    telemetryWarning(context, "channel_reference_failed");
+  }
+}
+
+function telemetryWarning(
+  context: RequestContext,
+  outcome:
+    | "analytics_write_failed"
+    | "channel_reference_failed"
+    | "completion_log_failed",
+): void {
+  try {
+    console.warn({
+      schema: 1,
+      level: "warn",
+      operation: "telemetry",
+      outcome,
+      requestID: context.requestID,
+    });
+  } catch {
+    // Telemetry must never alter request or delivery behavior.
+  }
 }

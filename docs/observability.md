@@ -80,6 +80,9 @@ internally. Production automatic invocation logs are disabled.
 
 Telemetry write failures never alter an API, queue, or APNs outcome. The fallback
 warning contains only schema, operation, bounded outcome, and random request ID.
+An invalid or unavailable log-correlation key omits the daily channel reference
+and emits the same kind of bounded warning; it does not block channel routing or
+delivery.
 
 Retention is controlled by the Cloudflare plan. APNW does not copy logs or
 analytics into Durable Objects, KV, D1, R2, or another history store.

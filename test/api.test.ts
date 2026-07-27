@@ -459,6 +459,61 @@ describe("APNW HTTP API", () => {
     });
     spy.mockRestore();
   });
+
+  it("keeps channel operations available when correlation telemetry is misconfigured", async () => {
+    const channelCapability = randomSecret();
+    const installationCapability = randomSecret();
+    await provision(channelCapability, randomSecret());
+    const warning = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    const response = await workerHandler.fetch(
+      new Request("https://apnw.test/v1/apps/chain_of_custody/device", {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${channelCapability}`,
+          "x-installation-authorization":
+            `Bearer ${installationCapability}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          installationID: randomSecret(),
+          deviceToken: "01020304",
+        }),
+      }),
+      {
+        ...env,
+        LOG_CORRELATION_KEY: "misconfigured",
+      },
+    );
+
+    expect(response.status).toBe(201);
+    expect(warning).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "channel_reference_failed",
+      }),
+    );
+    warning.mockRestore();
+  });
+
+  it("does not let a failing completion-log sink alter the response", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {
+      throw new Error("log sink unavailable");
+    });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {
+      throw new Error("warning sink unavailable");
+    });
+
+    const response = await workerHandler.fetch(
+      new Request("https://apnw.test/health"),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ status: "ok" });
+    log.mockRestore();
+    warning.mockRestore();
+  });
 });
 
 async function provision(

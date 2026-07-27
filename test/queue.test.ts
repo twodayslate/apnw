@@ -144,6 +144,30 @@ describe("delivery queue", () => {
     const result = await getQueueResult(batch, createExecutionContext());
     expect(result.explicitAcks).toEqual(["message-1", "message-2"]);
   });
+
+  it("delivers queued work when correlation telemetry is misconfigured", async () => {
+    const fixture = await queuedFixture(1);
+    vi.stubGlobal("fetch", async () => new Response(null, { status: 200 }));
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const warning = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    const batch = queueBatch(fixture.message);
+
+    await worker.queue(batch, {
+      ...env,
+      LOG_CORRELATION_KEY: "misconfigured",
+    });
+
+    const result = await getQueueResult(batch, createExecutionContext());
+    expect(result.explicitAcks).toEqual(["message-1"]);
+    expect(result.retryMessages).toEqual([]);
+    expect(warning).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "channel_reference_failed",
+      }),
+    );
+  });
 });
 
 async function queuedFixture(targetCount: number): Promise<{
