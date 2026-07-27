@@ -63,6 +63,12 @@ value is deliberately `unset`, which fails all runtime work closed. Use
 `npm run deploy:production`; it overrides the placeholder with the exact Git
 commit being deployed.
 
+`/health` also imports both Apple private keys, validates their identifier
+shapes, checks the configured App Attest certificate envelope, and derives a
+test correlation reference. It returns `503` without identifying the failed
+secret when this local readiness preflight fails. Correlation telemetry remains
+best effort for ordinary channel and queue operations.
+
 The four `APNS_CIRCUIT_*` variables in `wrangler.jsonc` tune the documented
 minimum-attempt, failure-rate, window, and suspension thresholds without a code
 change. Values outside the source-bounded safety range fall back to defaults.

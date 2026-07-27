@@ -3,6 +3,7 @@ import {
   AppAttestVerificationError,
   normalizeAppAttestKeyID,
 } from "./appattest/verifier";
+import { getProviderToken } from "./apns/jwt";
 import { buildPayload } from "./apns/payload";
 import { getApp, type AppConfig } from "./apps";
 import {
@@ -191,6 +192,14 @@ async function route(
       "misconfigured",
       "Service unavailable",
       "environment_mismatch",
+    );
+  }
+  if (isHealthRequest && !(await runtimeReady(env))) {
+    return error(
+      503,
+      "misconfigured",
+      "Service unavailable",
+      "readiness_failed",
     );
   }
   if (url.search !== "") {
@@ -564,6 +573,39 @@ export function runtimeConfigurationConsistent(env: Env): boolean {
     (env.SERVICE_VERSION !== "local" &&
       env.SERVICE_VERSION !== "unset")
   );
+}
+
+export async function runtimeReady(env: Env): Promise<boolean> {
+  if (!runtimeConfigurationConsistent(env)) return false;
+  if (
+    !/^[A-Z0-9]{10}$/.test(env.APNS_KEY_ID) ||
+    !/^[A-Z0-9]{10}$/.test(env.DEVICECHECK_KEY_ID) ||
+    !/^[A-Z0-9]{10}$/.test(env.APNS_TEAM_ID) ||
+    typeof env.APP_ATTEST_ROOT_CERT_PEM !== "string" ||
+    !/^-----BEGIN CERTIFICATE-----[\s\S]+-----END CERTIFICATE-----$/.test(
+      env.APP_ATTEST_ROOT_CERT_PEM.trim(),
+    )
+  ) {
+    return false;
+  }
+  try {
+    await Promise.all([
+      channelReference(env.LOG_CORRELATION_KEY, "readiness"),
+      getProviderToken(
+        env.APNS_TEAM_ID,
+        env.APNS_KEY_ID,
+        env.APNS_KEY_P8,
+      ),
+      getProviderToken(
+        env.APNS_TEAM_ID,
+        env.DEVICECHECK_KEY_ID,
+        env.DEVICECHECK_KEY_P8,
+      ),
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function resolveChannel(

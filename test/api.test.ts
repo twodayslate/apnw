@@ -81,6 +81,25 @@ describe("APNW HTTP API", () => {
     });
   });
 
+  it("reports failed readiness when an Apple private key cannot be imported", async () => {
+    const response = await workerHandler.fetch(
+      new Request("https://apnw.test/health"),
+      {
+        ...env,
+        APNS_KEY_ID: "BADKEY0001",
+        APNS_KEY_P8: "not-a-private-key",
+      },
+    );
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "misconfigured",
+        message: "Service unavailable",
+      },
+    });
+  });
+
   it("keeps unknown apps, bad capabilities, and unprovisioned channels opaque", async () => {
     const capability = randomSecret();
     const installation = randomSecret();
