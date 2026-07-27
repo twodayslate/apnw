@@ -14,6 +14,7 @@ import {
 } from "./verifier";
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1_000;
+export const MAX_OUTSTANDING_CHALLENGES_PER_SHARD = 512;
 
 export type ProvisioningFailure =
   | { ok: false; code: "invalid_attestation" }
@@ -132,6 +133,7 @@ export class ProvisioningObject extends DurableObject<Env> {
     purpose: "key-attestation" | "channel-provision";
   }): Promise<ChallengeResult> {
     const keyReference = await appAttestKeyReference(input.keyID);
+    this.pruneChallenges();
     const shardLimit = this.takeRateLimit(
       "shard:challenge",
       10_000,
@@ -142,6 +144,27 @@ export class ProvisioningObject extends DurableObject<Env> {
         ok: false,
         code: "rate_limited",
         retryAfter: shardLimit.retryAfter,
+      };
+    }
+    const now = Date.now();
+    const challengeCapacity = this.ctx.storage.sql
+      .exec<{ count: number; next_expiry: number | null }>(
+        `SELECT COUNT(*) AS count, MIN(expires_at) AS next_expiry
+         FROM challenges WHERE used_at IS NULL AND expires_at >= ?`,
+        now,
+      )
+      .one();
+    if (
+      (challengeCapacity?.count ?? 0) >=
+      MAX_OUTSTANDING_CHALLENGES_PER_SHARD
+    ) {
+      return {
+        ok: false,
+        code: "rate_limited",
+        retryAfter: Math.max(
+          1,
+          Math.ceil(((challengeCapacity?.next_expiry ?? now) - now) / 1_000),
+        ),
       };
     }
     const limit = this.takeRateLimit(
@@ -156,7 +179,6 @@ export class ProvisioningObject extends DurableObject<Env> {
         retryAfter: limit.retryAfter,
       };
     }
-    this.pruneChallenges();
     const challengeID = crypto.randomUUID();
     const challengeBytes = crypto.getRandomValues(new Uint8Array(32));
     const challenge = encodeBase64Url(challengeBytes);
@@ -421,8 +443,7 @@ export class ProvisioningObject extends DurableObject<Env> {
       return undefined;
     }
     const update = sql.exec(
-      "UPDATE challenges SET used_at = ? WHERE challenge_id = ? AND used_at IS NULL",
-      Date.now(),
+      "DELETE FROM challenges WHERE challenge_id = ? AND used_at IS NULL",
       challengeID,
     );
     return update.rowsWritten === 1 ? row : undefined;

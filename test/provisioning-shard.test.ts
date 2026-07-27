@@ -1,4 +1,6 @@
+import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { MAX_OUTSTANDING_CHALLENGES_PER_SHARD } from "../src/appattest/ProvisioningObject";
 import { provisioningShard } from "../src/index";
 
 describe("App Attest provisioning shards", () => {
@@ -23,6 +25,42 @@ describe("App Attest provisioning shards", () => {
     expect(
       first.filter((shard, index) => shard !== otherApp[index]).length,
     ).toBeGreaterThan(1_900);
+  });
+
+  it("bounds outstanding unauthenticated challenges per shard", async () => {
+    const stub = env.PROVISIONING.get(
+      env.PROVISIONING.idFromName(`challenge-capacity:${crypto.randomUUID()}`),
+    );
+    for (
+      let index = 0;
+      index < MAX_OUTSTANDING_CHALLENGES_PER_SHARD;
+      index += 1
+    ) {
+      const bytes = new Uint8Array(32);
+      new DataView(bytes.buffer).setUint32(0, index);
+      await expect(
+        stub.issueChallenge({
+          appID: "chain_of_custody",
+          keyID: base64(bytes),
+          purpose: "key-attestation",
+        }),
+      ).resolves.toMatchObject({ ok: true });
+    }
+    const overflowKey = new Uint8Array(32);
+    new DataView(overflowKey.buffer).setUint32(
+      0,
+      MAX_OUTSTANDING_CHALLENGES_PER_SHARD,
+    );
+    await expect(
+      stub.issueChallenge({
+        appID: "chain_of_custody",
+        keyID: base64(overflowKey),
+        purpose: "key-attestation",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      code: "rate_limited",
+    });
   });
 });
 

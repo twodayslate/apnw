@@ -76,6 +76,11 @@ Changing `LOG_CORRELATION_KEY` affects only future diagnostic correlation.
 - App Attest certificate trust terminates only at the configured Apple root;
   roots supplied in the attestation object are not trusted.
 
+Each provisioning shard retains at most 512 outstanding challenges. Consumed
+challenges are deleted immediately, and expired challenges are pruned before
+capacity is evaluated, so attacker-selected key IDs cannot grow challenge
+storage without bound.
+
 ## APNs cleanup
 
 - A `410` deletes only the matching token version when its registration time is
