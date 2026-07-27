@@ -60,6 +60,27 @@ describe("APNW HTTP API", () => {
     });
   });
 
+  it("fails production closed without an immutable service version", async () => {
+    const unversionedProductionEnv = {
+      ...env,
+      APNS_ENVIRONMENT: "production" as const,
+      APNS_KEY_ENVIRONMENT: "production" as const,
+      APP_ATTEST_ENVIRONMENT: "production" as const,
+      SERVICE_VERSION: "unset",
+    };
+    const response = await workerHandler.fetch(
+      new Request("https://apnw.test/health"),
+      unversionedProductionEnv,
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "misconfigured",
+        message: "Service unavailable",
+      },
+    });
+  });
+
   it("keeps unknown apps, bad capabilities, and unprovisioned channels opaque", async () => {
     const capability = randomSecret();
     const installation = randomSecret();

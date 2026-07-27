@@ -80,7 +80,7 @@
         "APNS_CIRCUIT_FAILURE_RATE": "0.05",
         "APNS_CIRCUIT_WINDOW_SECONDS": "300",
         "APNS_CIRCUIT_OPEN_SECONDS": "300",
-        "SERVICE_VERSION": "local",
+        "SERVICE_VERSION": "unset",
         "LOG_SAMPLE_RATE": "0.1"
       },
       "durable_objects": {

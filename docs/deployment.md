@@ -58,7 +58,10 @@ production private keys to development.
 
 `APNS_ENVIRONMENT`, `APNS_KEY_ENVIRONMENT`, and `APP_ATTEST_ENVIRONMENT` must all
 match. `/health` returns `503` when their declared environments differ. Set
-`SERVICE_VERSION` to the immutable release identifier.
+`SERVICE_VERSION` to the immutable release identifier. The checked-in production
+value is deliberately `unset`, which fails all runtime work closed. Use
+`npm run deploy:production`; it overrides the placeholder with the exact Git
+commit being deployed.
 
 The four `APNS_CIRCUIT_*` variables in `wrangler.jsonc` tune the documented
 minimum-attempt, failure-rate, window, and suspension thresholds without a code

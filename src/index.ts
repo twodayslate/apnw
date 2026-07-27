@@ -77,7 +77,7 @@ export default {
     batch: MessageBatch<DeliveryQueueMessage>,
     env: Env,
   ): Promise<void> {
-    if (!environmentConsistent(env)) {
+    if (!runtimeConfigurationConsistent(env)) {
       console.error({
         schema: 1,
         level: "error",
@@ -152,7 +152,7 @@ async function route(
   const isHealthRequest =
     request.method === "GET" && url.pathname === "/health";
   if (isHealthRequest) context.operation = "health";
-  if (!environmentConsistent(env)) {
+  if (!runtimeConfigurationConsistent(env)) {
     return error(
       503,
       "misconfigured",
@@ -515,6 +515,16 @@ export function environmentConsistent(env: Env): boolean {
       env.APNS_ENVIRONMENT === "production") &&
     env.APNS_KEY_ENVIRONMENT === env.APNS_ENVIRONMENT &&
     env.APP_ATTEST_ENVIRONMENT === env.APNS_ENVIRONMENT
+  );
+}
+
+export function runtimeConfigurationConsistent(env: Env): boolean {
+  if (!environmentConsistent(env)) return false;
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(env.SERVICE_VERSION)) return false;
+  return (
+    env.APNS_ENVIRONMENT !== "production" ||
+    (env.SERVICE_VERSION !== "local" &&
+      env.SERVICE_VERSION !== "unset")
   );
 }
 

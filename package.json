@@ -7,7 +7,7 @@
   "scripts": {
     "check": "npm run typecheck && npm test",
     "deploy:dev": "wrangler deploy --env=\"\"",
-    "deploy:production": "wrangler deploy --env production",
+    "deploy:production": "wrangler deploy --env production --var SERVICE_VERSION:$(git rev-parse --verify HEAD)",
     "dev": "wrangler dev",
     "test": "vitest run",
     "load-test": "node scripts/load-test.mjs",
