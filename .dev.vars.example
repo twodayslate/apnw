@@ -1,0 +1,8 @@
+# Copy this file to .dev.vars. Never commit the populated file.
+#
+# Base64-encode the complete .p8 file without line wrapping:
+#   APNS_KEY_P8="$(base64 < AuthKey_XXXXXXXXXX.p8 | tr -d '\n')"
+APNS_KEY_P8=BASE64_ENCODED_P8
+APNS_KEY_ID=XXXXXXXXXX
+APNS_TEAM_ID=XXXXXXXXXX
+CHANNEL_HMAC_KEY=BASE64URL_ENCODED_32_RANDOM_BYTES

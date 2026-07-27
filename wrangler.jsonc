@@ -1,0 +1,73 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "apnw-dev",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-26",
+  "workers_dev": true,
+  "vars": {
+    "APNS_ENVIRONMENT": "development",
+    "SERVICE_VERSION": "local",
+    "LOG_SAMPLE_RATE": "1"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CHANNELS",
+        "class_name": "ChannelObject"
+      }
+    ]
+  },
+  "analytics_engine_datasets": [
+    {
+      "binding": "APNW_ANALYTICS",
+      "dataset": "apnw_dev"
+    }
+  ],
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ChannelObject"]
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": true
+    }
+  },
+  "env": {
+    "production": {
+      "name": "apnw-prod",
+      "workers_dev": true,
+      "vars": {
+        "APNS_ENVIRONMENT": "production",
+        "SERVICE_VERSION": "local",
+        "LOG_SAMPLE_RATE": "1"
+      },
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "CHANNELS",
+            "class_name": "ChannelObject"
+          }
+        ]
+      },
+      "analytics_engine_datasets": [
+        {
+          "binding": "APNW_ANALYTICS",
+          "dataset": "apnw_prod"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "enabled": true,
+          "head_sampling_rate": 1,
+          "invocation_logs": false
+        }
+      }
+    }
+  }
+}
