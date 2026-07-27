@@ -46,6 +46,9 @@ Treat changes under `src/observability` as privacy-sensitive.
 - Alert when the delivery queue's oldest message exceeds five minutes.
 - Alert on any delivery DLQ message. A DLQ is a data-loss precursor, not routine
   retry storage.
+- A Channel Durable Object redrives a batch that remains `enqueued` for one hour.
+  Investigate and drain the corresponding DLQ copy after the incident; replaying
+  it later is safe because completed batches acknowledge without redelivery.
 - Investigate Durable Object overload or queue backlog growth even when HTTP
   acceptance remains healthy.
 - Investigate unexpected zero publish traffic only when the app normally
@@ -66,8 +69,9 @@ alerts merely to suppress noise.
    availability, throttling, and recipient-token failures.
 7. For cleanup circuit events, verify APNs host, topic, key environment, and the
    affected app version before allowing the five-minute suspension to expire.
-8. Retry DLQ work only after identifying the cause. Delivery batches are
-   idempotent, but blind replay can preserve an outage.
+8. Confirm stale batches are being redriven by their Channel Durable Objects,
+   then drain or replay DLQ copies only after identifying the cause. Delivery
+   batches are idempotent, but blind replay can preserve an outage.
 9. Roll back when the issue correlates with a release.
 10. Rotate an Apple key only for compromise, revocation, or confirmed
     credential/environment failure.

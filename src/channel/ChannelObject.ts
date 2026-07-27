@@ -11,11 +11,12 @@ import {
   CHANNEL_SCHEMA_VERSION,
 } from "./schema";
 
-const EVENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+export const EVENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const DELIVERY_BATCH_SIZE = 100;
 const DIRECT_DELIVERY_MAX = 20;
 const DELIVERY_OUTBOX_RETRY_MS = 10_000;
 export const DELIVERY_PROCESSING_LEASE_MS = 30_000;
+export const DELIVERY_ENQUEUED_RECOVERY_MS = 60 * 60 * 1_000;
 const REGISTRATION_MUTATIONS_PER_MINUTE = 300;
 const PUBLISHES_PER_MINUTE = 30;
 const CLOSE_ATTEMPTS_PER_MINUTE = 5;
@@ -279,7 +280,10 @@ export class ChannelObject extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     if (!this.prepareExistingSchema()) return;
+    this.pruneEvents();
     const staleProcessingCutoff = Date.now() - DELIVERY_PROCESSING_LEASE_MS;
+    const staleEnqueuedCutoff =
+      Date.now() - DELIVERY_ENQUEUED_RECOVERY_MS;
     const recoverable = this.ctx.storage.sql
       .exec<{
         app_id: string;
@@ -291,8 +295,10 @@ export class ChannelObject extends DurableObject<Env> {
          JOIN events e ON e.idempotency_key = b.idempotency_key
          WHERE b.state = 'pending'
            OR (b.state = 'processing' AND b.updated_at <= ?)
+           OR (b.state = 'enqueued' AND b.updated_at <= ?)
          ORDER BY b.idempotency_key, b.batch_id`,
         staleProcessingCutoff,
+        staleEnqueuedCutoff,
       )
       .toArray();
     for (let offset = 0; offset < recoverable.length; offset += 100) {
@@ -314,11 +320,13 @@ export class ChannelObject extends DurableObject<Env> {
              AND (
                state = 'pending'
                OR (state = 'processing' AND updated_at <= ?)
+               OR (state = 'enqueued' AND updated_at <= ?)
              )`,
           Date.now(),
           row.idempotency_key,
           row.batch_id,
           staleProcessingCutoff,
+          staleEnqueuedCutoff,
         );
         this.ctx.storage.sql.exec(
           `UPDATE events SET state = 'delivering'
@@ -387,6 +395,7 @@ export class ChannelObject extends DurableObject<Env> {
     sql.exec("DELETE FROM events");
     sql.exec("DELETE FROM devices");
     sql.exec("UPDATE channel_state SET closed_at = ? WHERE singleton = 1", Date.now());
+    this.ctx.waitUntil(this.ctx.storage.deleteAlarm());
     return { ok: true, alreadyClosed: false };
   }
 
@@ -499,9 +508,7 @@ export class ChannelObject extends DurableObject<Env> {
       now,
       input.idempotencyKey,
     );
-    if (batchCount > 0) {
-      this.ctx.waitUntil(this.scheduleDeliveryRecoveryAlarm());
-    }
+    this.ctx.waitUntil(this.scheduleDeliveryRecoveryAlarm());
     return {
       ok: true,
       eventID: input.idempotencyKey,
@@ -691,6 +698,7 @@ export class ChannelObject extends DurableObject<Env> {
       batchID,
     );
     this.refreshEventState(eventID, invalidRemoved);
+    this.ctx.waitUntil(this.scheduleDeliveryRecoveryAlarm());
     return {
       ok: true,
       accepted,
@@ -941,23 +949,38 @@ export class ChannelObject extends DurableObject<Env> {
   }
 
   private async scheduleDeliveryRecoveryAlarm(): Promise<void> {
-    const recoverAt = this.ctx.storage.sql
+    const deliveryRecoverAt = this.ctx.storage.sql
       .exec<{ recover_at: number | null }>(
         `SELECT MIN(
           CASE
             WHEN state = 'pending' THEN updated_at + ?
             WHEN state = 'processing' THEN updated_at + ?
+            WHEN state = 'enqueued' THEN updated_at + ?
             ELSE NULL
           END
         ) AS recover_at
         FROM delivery_batches
-        WHERE state IN ('pending', 'processing')`,
+        WHERE state IN ('pending', 'processing', 'enqueued')`,
         DELIVERY_OUTBOX_RETRY_MS,
         DELIVERY_PROCESSING_LEASE_MS,
+        DELIVERY_ENQUEUED_RECOVERY_MS,
       )
       .one()?.recover_at;
-    if (recoverAt !== null && recoverAt !== undefined) {
-      await this.ctx.storage.setAlarm(Math.max(Date.now() + 1_000, recoverAt));
+    const retentionAt = this.ctx.storage.sql
+      .exec<{ retention_at: number | null }>(
+        `SELECT MIN(created_at + ?) AS retention_at
+         FROM events WHERE state = 'completed'`,
+        EVENT_RETENTION_MS,
+      )
+      .one()?.retention_at;
+    const candidates = [deliveryRecoverAt, retentionAt].filter(
+      (value): value is number =>
+        value !== null && value !== undefined,
+    );
+    if (candidates.length > 0) {
+      await this.ctx.storage.setAlarm(
+        Math.max(Date.now() + 1_000, Math.min(...candidates)),
+      );
     }
   }
 
@@ -1078,19 +1101,19 @@ export class ChannelObject extends DurableObject<Env> {
     sql.exec(
       `DELETE FROM event_deliveries WHERE idempotency_key IN (
         SELECT idempotency_key FROM events
-        WHERE created_at < ? AND state = 'completed'
+        WHERE created_at <= ? AND state = 'completed'
       )`,
       cutoff,
     );
     sql.exec(
       `DELETE FROM delivery_batches WHERE idempotency_key IN (
         SELECT idempotency_key FROM events
-        WHERE created_at < ? AND state = 'completed'
+        WHERE created_at <= ? AND state = 'completed'
       )`,
       cutoff,
     );
     sql.exec(
-      "DELETE FROM events WHERE created_at < ? AND state = 'completed'",
+      "DELETE FROM events WHERE created_at <= ? AND state = 'completed'",
       cutoff,
     );
   }

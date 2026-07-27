@@ -15,6 +15,8 @@
   so rotating telemetry or Apple secrets does not orphan channels.
 - Idempotency claims include the event, exclusion, and exact client timestamp
   and remain for seven days without count-based eviction.
+- Completed idempotency and delivery records are pruned by Durable Object alarms
+  even when a channel receives no later publish.
 - A stale APNs response can mutate only the snapshotted installation, token, and
   token version.
 - Notification content is selected from source control and contains no
