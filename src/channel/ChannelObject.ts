@@ -13,6 +13,9 @@ import {
 const EVENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const DELIVERY_BATCH_SIZE = 100;
 const DIRECT_DELIVERY_MAX = 20;
+const REGISTRATION_MUTATIONS_PER_MINUTE = 300;
+const PUBLISHES_PER_MINUTE = 30;
+const CLOSE_ATTEMPTS_PER_MINUTE = 5;
 
 type MutationFailure =
   | { ok: false; code: "not_found" }
@@ -160,7 +163,11 @@ export class ChannelObject extends DurableObject<Env> {
     installationCapabilityDigest: string,
   ): RegistrationResult {
     if (!this.isUsable()) return { ok: false, code: "not_found" };
-    const limit = this.takeRateLimit("register", 10_000, 60_000);
+    const limit = this.takeRateLimit(
+      "register",
+      REGISTRATION_MUTATIONS_PER_MINUTE,
+      60_000,
+    );
     if (!limit.allowed) return rateFailure(limit.retryAfter);
 
     const sql = this.ctx.storage.sql;
@@ -215,7 +222,11 @@ export class ChannelObject extends DurableObject<Env> {
             THEN excluded.token_registered_at
           ELSE devices.token_registered_at
         END,
-        suspect_count = 0,
+        suspect_count = CASE
+          WHEN devices.device_token <> excluded.device_token
+            THEN 0
+          ELSE devices.suspect_count
+        END,
         quarantined_at = NULL,
         updated_at = excluded.updated_at`,
       installationID,
@@ -239,7 +250,11 @@ export class ChannelObject extends DurableObject<Env> {
     installationCapabilityDigest: string,
   ): UnregistrationResult {
     if (!this.isUsable()) return { ok: false, code: "not_found" };
-    const limit = this.takeRateLimit("unregister", 10_000, 60_000);
+    const limit = this.takeRateLimit(
+      "unregister",
+      REGISTRATION_MUTATIONS_PER_MINUTE,
+      60_000,
+    );
     if (!limit.allowed) return rateFailure(limit.retryAfter);
     const existing = this.ctx.storage.sql
       .exec<{ installation_capability_digest: string }>(
@@ -345,7 +360,11 @@ export class ChannelObject extends DurableObject<Env> {
       return { ok: false, code: "not_found" };
     }
     if (state.closed_at !== null) return { ok: true, alreadyClosed: true };
-    const limit = this.takeRateLimit("close", 10, 60_000);
+    const limit = this.takeRateLimit(
+      "close",
+      CLOSE_ATTEMPTS_PER_MINUTE,
+      60_000,
+    );
     if (!limit.allowed) return rateFailure(limit.retryAfter);
     const sql = this.ctx.storage.sql;
     sql.exec("DELETE FROM event_deliveries");
@@ -358,7 +377,11 @@ export class ChannelObject extends DurableObject<Env> {
 
   private publishLocked(input: PublishInput): PublishResult {
     if (!this.isUsable()) return { ok: false, code: "not_found" };
-    const limit = this.takeRateLimit("publish", 1_200, 60_000);
+    const limit = this.takeRateLimit(
+      "publish",
+      PUBLISHES_PER_MINUTE,
+      60_000,
+    );
     if (!limit.allowed) return rateFailure(limit.retryAfter);
     if (
       input.excludeInstallationID &&
@@ -409,13 +432,15 @@ export class ChannelObject extends DurableObject<Env> {
       ? sql
           .exec<{ installation_id: string; token_version: number }>(
             `SELECT installation_id, token_version FROM devices
-             WHERE installation_id <> ? ORDER BY installation_id`,
+             WHERE installation_id <> ? AND quarantined_at IS NULL
+             ORDER BY installation_id`,
             input.excludeInstallationID,
           )
           .toArray()
       : sql
           .exec<{ installation_id: string; token_version: number }>(
-            "SELECT installation_id, token_version FROM devices ORDER BY installation_id",
+            `SELECT installation_id, token_version FROM devices
+             WHERE quarantined_at IS NULL ORDER BY installation_id`,
           )
           .toArray();
     for (let index = 0; index < installations.length; index += 1) {
@@ -652,12 +677,12 @@ export class ChannelObject extends DurableObject<Env> {
   }
 
   private applySafeCleanup(delivery: DeliveryRow, result: ApnsResult): boolean {
-    if (this.cleanupCircuitOpen()) return false;
     if (!delivery.device_token || delivery.current_token_version !== delivery.token_version) {
       return false;
     }
     const sql = this.ctx.storage.sql;
     if (result.cleanup === "unregistered") {
+      if (this.cleanupCircuitOpen()) return false;
       if (
         result.invalidationTimestamp === undefined ||
         delivery.token_registered_at === null ||
@@ -678,6 +703,7 @@ export class ChannelObject extends DurableObject<Env> {
     if (result.cleanup === "suspect") {
       const suspectCount = delivery.suspect_count ?? 0;
       if (suspectCount >= 1) {
+        if (this.cleanupCircuitOpen()) return false;
         const cursor = sql.exec(
           `DELETE FROM devices WHERE installation_id = ? AND device_token = ?
             AND token_version = ? AND suspect_count >= 1`,
@@ -722,6 +748,8 @@ export class ChannelObject extends DurableObject<Env> {
     const upstreamFailure =
       result.configurationFailure ||
       result.retryable ||
+      result.reason === "bad_device_token" ||
+      result.reason === "unregistered" ||
       result.reason === "network_error" ||
       result.reason === "request_timeout";
     const failureCount = (reset ? 0 : row.failure_count) + (upstreamFailure ? 1 : 0);

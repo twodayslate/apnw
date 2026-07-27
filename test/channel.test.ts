@@ -142,7 +142,9 @@ describe("channel delivery state", () => {
     vi.stubGlobal("fetch", async () =>
       Response.json({ reason: "BadDeviceToken" }, { status: 400 }),
     );
-    for (const event of ["check_requested", "decision_available"] as const) {
+    for (const [index, event] of (
+      ["check_requested", "decision_available"] as const
+    ).entries()) {
       const eventID = crypto.randomUUID();
       await stub.publish({
         app,
@@ -153,12 +155,82 @@ describe("channel delivery state", () => {
         idempotencyKey: eventID,
       });
       await stub.deliverBatch(eventID, 0, app);
+      if (index === 0) {
+        await stub.registerDevice(
+          installationID,
+          "33333333",
+          installationDigest,
+        );
+      }
     }
     const removal = await stub.unregisterDevice(
       installationID,
       installationDigest,
     );
     expect(removal).toMatchObject({ ok: true, removed: false });
+    vi.unstubAllGlobals();
+  });
+
+  it("opens delivery protection after a burst of invalid tokens", async () => {
+    const stub = await provisionedChannel();
+    const installations = await Promise.all(
+      Array.from({ length: 12 }, async (_, index) => {
+        const installationID = randomSecret();
+        const installationDigest = await capabilityDigest(
+          "installation",
+          appID,
+          randomSecret(),
+        );
+        const deviceToken = (index + 1).toString(16).padStart(8, "0");
+        await stub.registerDevice(
+          installationID,
+          deviceToken,
+          installationDigest,
+        );
+        return { deviceToken, installationID, installationDigest };
+      }),
+    );
+    let requestCount = 0;
+    vi.stubGlobal("fetch", async () => {
+      requestCount += 1;
+      return Response.json({ reason: "BadDeviceToken" }, { status: 400 });
+    });
+
+    const firstEventID = crypto.randomUUID();
+    await stub.publish({
+      app,
+      appID,
+      clientCreatedAt: Date.now(),
+      event: "check_requested",
+      fingerprint: randomHex(),
+      idempotencyKey: firstEventID,
+    });
+    await stub.deliverBatch(firstEventID, 0, app);
+    expect(requestCount).toBe(12);
+
+    for (const installation of installations) {
+      await stub.registerDevice(
+        installation.installationID,
+        installation.deviceToken,
+        installation.installationDigest,
+      );
+    }
+    const secondEventID = crypto.randomUUID();
+    await stub.publish({
+      app,
+      appID,
+      clientCreatedAt: Date.now(),
+      event: "decision_available",
+      fingerprint: randomHex(),
+      idempotencyKey: secondEventID,
+    });
+    const protectedDelivery = await stub.deliverBatch(
+      secondEventID,
+      0,
+      app,
+    );
+    expect(protectedDelivery.retryable).toBe(true);
+    expect(requestCount).toBe(12);
     vi.unstubAllGlobals();
   });
 

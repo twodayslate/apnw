@@ -1256,10 +1256,12 @@ The v1 implementation resolved the original open decisions as follows:
    40-device cap. Publishes above the measured safe direct-delivery budget are
    accepted into a transactional outbox and drained by an autoscaling Queue
    consumer rather than rejected.
-5. Initial per-capability token buckets allow bursts of 60 registrations, 60
-   unregistrations, 30 publishes, and 5 closure attempts per minute. They isolate
-   one abusive channel and do not cap aggregate traffic across independent
-   channels. App-wide and source-IP signals are adaptive incident controls only.
+5. Initial per-capability token buckets allow 300 registrations, 300
+   unregistrations, 30 publishes, and 5 closure attempts per minute.
+   Invalid-token bursts also suspend delivery for the affected
+   channel. These controls isolate one abusive channel and do not cap aggregate
+   traffic across independent channels. App-wide and source-IP signals are
+   adaptive incident controls only.
 6. Pairing creators close abandoned or revoked channels with their private
    administrator capability. APNW deliberately has no global channel directory
    or server-side enumerator.

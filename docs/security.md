@@ -86,19 +86,22 @@ storage without bound.
 - A `410` deletes only the matching token version when its registration time is
   not newer than Apple's millisecond invalidation timestamp.
 - A timestamp-free `410` does not delete.
-- One `BadDeviceToken` quarantines the version; a second matching failure is
-  required for deletion.
+- One `BadDeviceToken` quarantines the version and excludes it from new
+  delivery snapshots. Re-registration makes the matching version eligible for
+  one confirmation attempt; a second matching failure is required for
+  deletion.
 - `DeviceTokenNotForTopic`, topic, provider-token, and environment errors never
   delete registrations.
 - Ten cleanup/configuration candidates exceeding 5% in five minutes suspend
-  cleanup. Provider/environment errors and sustained upstream failures open the
-  delivery circuit and defer remaining work.
+  cleanup. Provider/environment errors, sustained upstream failures, and bursts
+  of invalid or unregistered tokens open the delivery circuit and defer
+  remaining work.
 
 ## Scale versus abuse controls
 
 There is no global or app-wide quota. Per-channel controls are generous
-short-window isolation controls (10,000 registration mutations and 1,200
-publishes per minute), so unrelated channels do not compete. Provisioning uses
+short-window isolation controls (300 registration mutations and 30 publishes
+per minute), so unrelated channels do not compete. Provisioning uses
 256 shards per app and per-shard controls. Edge source-IP rules are emergency
 signals only because carrier NAT and Private Relay aggregate legitimate users.
 
