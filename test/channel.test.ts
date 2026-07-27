@@ -234,6 +234,71 @@ describe("channel delivery state", () => {
     vi.unstubAllGlobals();
   });
 
+  it("keeps an immediate provider-token circuit open after later successes", async () => {
+    const stub = await provisionedChannel();
+    for (let index = 0; index < 2; index += 1) {
+      await stub.registerDevice(
+        randomSecret(),
+        (index + 20).toString(16).padStart(8, "0"),
+        await capabilityDigest(
+          "installation",
+          appID,
+          randomSecret(),
+        ),
+      );
+    }
+    const warning = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    let requestCount = 0;
+    vi.stubGlobal("fetch", async () => {
+      requestCount += 1;
+      return requestCount === 1
+        ? Response.json(
+            { reason: "InvalidProviderToken" },
+            { status: 403 },
+          )
+        : new Response(null, { status: 200 });
+    });
+
+    const firstEventID = crypto.randomUUID();
+    await stub.publish({
+      app,
+      appID,
+      clientCreatedAt: Date.now(),
+      event: "check_requested",
+      fingerprint: randomHex(),
+      idempotencyKey: firstEventID,
+    });
+    await stub.deliverBatch(firstEventID, 0, app);
+
+    const secondEventID = crypto.randomUUID();
+    await stub.publish({
+      app,
+      appID,
+      clientCreatedAt: Date.now(),
+      event: "decision_available",
+      fingerprint: randomHex(),
+      idempotencyKey: secondEventID,
+    });
+    const protectedDelivery = await stub.deliverBatch(
+      secondEventID,
+      0,
+      app,
+    );
+
+    expect(requestCount).toBe(2);
+    expect(protectedDelivery).toMatchObject({
+      apnsReason: "circuit_open",
+      retryable: true,
+    });
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining("delivery_circuit_opened"),
+    );
+    warning.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
   it("suspends cleanup before a burst of 410 responses can erase the channel", async () => {
     const stub = await provisionedChannel();
     const installations = await Promise.all(

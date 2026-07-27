@@ -654,8 +654,10 @@ export class ChannelObject extends DurableObject<Env> {
           );
           continue;
         }
-        apnsReason = result.reason;
-        apnsStatus = result.status;
+        if (apnsReason === "none") {
+          apnsReason = result.reason;
+          apnsStatus = result.status;
+        }
         apnsReasonCounts[result.reason] =
           (apnsReasonCounts[result.reason] ?? 0) + 1;
         const status = result.retryable ? "transient" : "permanent";
@@ -755,13 +757,16 @@ export class ChannelObject extends DurableObject<Env> {
     const circuit = this.circuitConfiguration();
     const row = sql
       .exec<{
+        circuit_open_until: number | null;
+        cleanup_suspended_until: number | null;
         window_started_at: number;
         request_count: number;
         failure_count: number;
         cleanup_candidate_count: number;
       }>(
         `SELECT window_started_at, request_count, failure_count,
-          cleanup_candidate_count
+          cleanup_candidate_count, circuit_open_until,
+          cleanup_suspended_until
          FROM apns_health WHERE singleton = 1`,
       )
       .one();
@@ -787,6 +792,24 @@ export class ChannelObject extends DurableObject<Env> {
       result.reason === "topic_error" ||
       (requestCount >= circuit.minimumAttempts &&
         cleanupCandidateCount / requestCount > circuit.failureRate);
+    const deliveryWasOpen =
+      row?.circuit_open_until !== null &&
+      row?.circuit_open_until !== undefined &&
+      row.circuit_open_until > now;
+    const cleanupWasSuspended =
+      row?.cleanup_suspended_until !== null &&
+      row?.cleanup_suspended_until !== undefined &&
+      row.cleanup_suspended_until > now;
+    const circuitOpenUntil = shouldOpenDelivery
+      ? now + circuit.openMs
+      : deliveryWasOpen
+        ? row.circuit_open_until
+        : null;
+    const cleanupSuspendedUntil = shouldSuspendCleanup
+      ? now + circuit.openMs
+      : cleanupWasSuspended
+        ? row.cleanup_suspended_until
+        : null;
     sql.exec(
       `UPDATE apns_health SET window_started_at = ?, request_count = ?,
         failure_count = ?, circuit_open_until = ?,
@@ -795,10 +818,16 @@ export class ChannelObject extends DurableObject<Env> {
       reset ? now : row?.window_started_at ?? now,
       requestCount,
       failureCount,
-      shouldOpenDelivery ? now + circuit.openMs : null,
+      circuitOpenUntil,
       cleanupCandidateCount,
-      shouldSuspendCleanup ? now + circuit.openMs : null,
+      cleanupSuspendedUntil,
     );
+    if (shouldOpenDelivery && !deliveryWasOpen) {
+      logCircuitTransition("delivery_circuit_opened");
+    }
+    if (shouldSuspendCleanup && !cleanupWasSuspended) {
+      logCircuitTransition("cleanup_suspended");
+    }
   }
 
   private circuitOpen(): boolean {
@@ -1090,6 +1119,18 @@ function circuitOpenResult(): ApnsResult {
     reason: "circuit_open",
     latencyMs: 0,
   };
+}
+
+function logCircuitTransition(
+  outcome: "cleanup_suspended" | "delivery_circuit_opened",
+): void {
+  console.warn(
+    JSON.stringify({
+      schema: "apnw.apns_circuit.v1",
+      operation: "apns_delivery",
+      outcome,
+    }),
+  );
 }
 
 function boundedNumber(
