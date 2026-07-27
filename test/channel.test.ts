@@ -1,4 +1,4 @@
-import { env } from "cloudflare:test";
+import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { apps } from "../src/apps";
 import {
@@ -11,6 +11,93 @@ const appID = "chain_of_custody";
 const app = apps[appID];
 
 describe("channel delivery state", () => {
+  it("serializes concurrent claims for one idempotency key", async () => {
+    const stub = await provisionedChannel();
+    for (let index = 0; index < 3; index += 1) {
+      await stub.registerDevice(
+        randomSecret(),
+        (index + 100).toString(16).padStart(8, "0"),
+        await capabilityDigest(
+          "installation",
+          appID,
+          randomSecret(),
+        ),
+      );
+    }
+    const idempotencyKey = crypto.randomUUID();
+    const input = {
+      app,
+      appID,
+      clientCreatedAt: Date.now(),
+      event: "check_requested",
+      fingerprint: randomHex(),
+      idempotencyKey,
+    };
+
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => stub.publish(input)),
+    );
+    const deliveryCount = await runInDurableObject(
+      stub,
+      (_instance, state) =>
+        state.storage.sql
+          .exec<{ count: number }>(
+            `SELECT COUNT(*) AS count FROM event_deliveries
+             WHERE idempotency_key = ?`,
+            idempotencyKey,
+          )
+          .one().count,
+    );
+
+    expect(results.filter((result) => result.ok && result.idempotency === "new"))
+      .toHaveLength(1);
+    expect(results.every((result) => result.ok)).toBe(true);
+    expect(deliveryCount).toBe(3);
+  });
+
+  it("prunes completed idempotency records after seven days", async () => {
+    const stub = await provisionedChannel();
+    const expiredEventID = crypto.randomUUID();
+    await stub.publish({
+      app,
+      appID,
+      clientCreatedAt: Date.now(),
+      event: "check_requested",
+      fingerprint: randomHex(),
+      idempotencyKey: expiredEventID,
+    });
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        `UPDATE events SET created_at = ?
+         WHERE idempotency_key = ?`,
+        Date.now() - 8 * 24 * 60 * 60 * 1_000,
+        expiredEventID,
+      );
+    });
+
+    const currentEventID = crypto.randomUUID();
+    await stub.publish({
+      app,
+      appID,
+      clientCreatedAt: Date.now(),
+      event: "decision_available",
+      fingerprint: randomHex(),
+      idempotencyKey: currentEventID,
+    });
+    const retained = await runInDurableObject(
+      stub,
+      (_instance, state) =>
+        state.storage.sql
+          .exec<{ idempotency_key: string }>(
+            "SELECT idempotency_key FROM events ORDER BY idempotency_key",
+          )
+          .toArray()
+          .map((row) => row.idempotency_key),
+    );
+
+    expect(retained).toEqual([currentEventID]);
+  });
+
   it("has no device-count ceiling and partitions large snapshots into queue batches", async () => {
     const stub = await provisionedChannel();
     const registrations = await Promise.all(
