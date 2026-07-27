@@ -6,6 +6,7 @@ import {
   deriveChannelName,
   encodeBase64Url,
 } from "../src/auth";
+import workerHandler from "../src/index";
 
 const worker = exports as unknown as {
   default: { fetch(request: Request): Promise<Response> };
@@ -24,6 +25,39 @@ describe("APNW HTTP API", () => {
     expect(response.headers.get("strict-transport-security")).toContain(
       "max-age=",
     );
+  });
+
+  it("fails every HTTP route closed when environments disagree", async () => {
+    const mismatchedEnv = {
+      ...env,
+      APP_ATTEST_ENVIRONMENT: "production" as const,
+    };
+    const health = await workerHandler.fetch(
+      new Request("https://apnw.test/health"),
+      mismatchedEnv,
+    );
+    const challenge = await workerHandler.fetch(
+      new Request(
+        "https://apnw.test/v1/apps/chain_of_custody/app-attest/challenge",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            purpose: "attest_key",
+            keyID: randomSecret(),
+          }),
+        },
+      ),
+      mismatchedEnv,
+    );
+    expect(health.status).toBe(503);
+    expect(challenge.status).toBe(503);
+    expect(await challenge.json()).toEqual({
+      error: {
+        code: "misconfigured",
+        message: "Service unavailable",
+      },
+    });
   });
 
   it("keeps unknown apps, bad capabilities, and unprovisioned channels opaque", async () => {

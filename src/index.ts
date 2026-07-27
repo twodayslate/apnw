@@ -77,6 +77,16 @@ export default {
     batch: MessageBatch<DeliveryQueueMessage>,
     env: Env,
   ): Promise<void> {
+    if (!environmentConsistent(env)) {
+      console.error({
+        schema: 1,
+        level: "error",
+        operation: "queue_delivery",
+        outcome: "environment_mismatch",
+      });
+      batch.retryAll({ delaySeconds: 60 });
+      return;
+    }
     for (const message of batch.messages) {
       const body = message.body;
       const app = getApp(body.appID);
@@ -139,22 +149,21 @@ async function route(
   context: RequestContext,
 ): Promise<Completed> {
   const url = new URL(request.url);
+  const isHealthRequest =
+    request.method === "GET" && url.pathname === "/health";
+  if (isHealthRequest) context.operation = "health";
+  if (!environmentConsistent(env)) {
+    return error(
+      503,
+      "misconfigured",
+      "Service unavailable",
+      "environment_mismatch",
+    );
+  }
   if (url.search !== "") {
     throw new HttpError(404, "not_found", "Not found");
   }
-  if (request.method === "GET" && url.pathname === "/health") {
-    context.operation = "health";
-    if (
-      env.APNS_KEY_ENVIRONMENT !== env.APNS_ENVIRONMENT ||
-      env.APP_ATTEST_ENVIRONMENT !== env.APNS_ENVIRONMENT
-    ) {
-      return error(
-        503,
-        "misconfigured",
-        "Service unavailable",
-        "environment_mismatch",
-      );
-    }
+  if (isHealthRequest) {
     return ok(
       {
         status: "ok",
@@ -498,6 +507,15 @@ async function route(
   }
 
   throw new HttpError(404, "not_found", "Not found");
+}
+
+export function environmentConsistent(env: Env): boolean {
+  return (
+    (env.APNS_ENVIRONMENT === "development" ||
+      env.APNS_ENVIRONMENT === "production") &&
+    env.APNS_KEY_ENVIRONMENT === env.APNS_ENVIRONMENT &&
+    env.APP_ATTEST_ENVIRONMENT === env.APNS_ENVIRONMENT
+  );
 }
 
 async function resolveChannel(
