@@ -5,4 +5,13 @@
 APNS_KEY_P8=BASE64_ENCODED_P8
 APNS_KEY_ID=XXXXXXXXXX
 APNS_TEAM_ID=XXXXXXXXXX
-CHANNEL_HMAC_KEY=BASE64URL_ENCODED_32_RANDOM_BYTES
+# Must match APNS_ENVIRONMENT in wrangler.jsonc. Keep separate key material
+# and secret provisioning workflows for development and production.
+APNS_KEY_ENVIRONMENT=development
+# DeviceCheck service key used by the asynchronous App Attest receipt assessor.
+DEVICECHECK_KEY_P8=BASE64_ENCODED_DEVICECHECK_P8
+DEVICECHECK_KEY_ID=XXXXXXXXXX
+# PEM from Apple's App Attest root certificate authority page.
+APP_ATTEST_ROOT_CERT_PEM="-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+# Rotates pseudonymous channel references daily; never used for object routing.
+LOG_CORRELATION_KEY=BASE64URL_ENCODED_EXACTLY_32_RANDOM_BYTES

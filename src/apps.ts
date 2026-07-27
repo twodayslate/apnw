@@ -5,14 +5,42 @@ export interface NotificationTemplate {
 
 export interface AppConfig {
   readonly bundleID: string;
-  readonly routeSchemes: readonly string[];
+  readonly appAttest: {
+    readonly extensionPolicy: "if-present" | "required";
+    readonly maxFraudRiskMetric: number;
+    readonly allowedValidationCategories: {
+      readonly development: readonly number[];
+      readonly production: readonly number[];
+    };
+    readonly allowedBundleVersions: readonly string[];
+  };
+  readonly provisioning: {
+    readonly shardCount: number;
+    readonly shardVersion: number;
+  };
   readonly templates: Readonly<Record<string, NotificationTemplate>>;
 }
 
 export const apps = {
   chain_of_custody: {
     bundleID: "com.twodayslate.coc",
-    routeSchemes: ["coc"],
+    appAttest: {
+      extensionPolicy: "if-present",
+      // Tune from production observations. Reinstalls and device transfers can
+      // legitimately increase Apple's rolling 30-day count.
+      maxFraudRiskMetric: 10,
+      allowedValidationCategories: {
+        development: [3],
+        production: [2, 4],
+      },
+      // Keep this list synchronized with CFBundleVersion values that are
+      // currently allowed to provision new channels.
+      allowedBundleVersions: ["1"],
+    },
+    provisioning: {
+      shardCount: 256,
+      shardVersion: 1,
+    },
     templates: {
       check_requested: {
         title: "CoC update",
