@@ -1,4 +1,4 @@
-import { env } from "cloudflare:test";
+import { env, runInDurableObject } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -61,6 +61,34 @@ describe("APNW HTTP API", () => {
     const opaqueBody = await unauthenticated.json();
     expect(await unknown.json()).toEqual(opaqueBody);
     expect(await unprovisioned.json()).toEqual(opaqueBody);
+  });
+
+  it("does not initialize persistent state for an unprovisioned capability", async () => {
+    const capability = randomSecret();
+    const name = await deriveChannelName("chain_of_custody", capability);
+    const stub = env.CHANNELS.get(env.CHANNELS.idFromName(name));
+    const response = await call("/v1/apps/chain_of_custody/device", {
+      method: "PUT",
+      capability,
+      installationCapability: randomSecret(),
+      json: {
+        installationID: randomSecret(),
+        deviceToken: "aabbccdd",
+      },
+    });
+    const tables = await runInDurableObject(
+      stub,
+      (_instance, state) =>
+        state.storage.sql
+          .exec<{ name: string }>(
+            `SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name NOT LIKE '_cf_%'`,
+          )
+          .toArray()
+          .map((row) => row.name),
+    );
+    expect(response.status).toBe(404);
+    expect(tables).toEqual([]);
   });
 
   it("requires the installation capability for device churn", async () => {

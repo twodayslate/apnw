@@ -104,21 +104,22 @@ interface CountRow extends Record<string, SqlStorageValue> {
 
 export class ChannelObject extends DurableObject<Env> {
   private exclusiveTail: Promise<void> = Promise.resolve();
+  private schemaReady: boolean | undefined;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+  }
+
+  private initializeSchema(): void {
+    if (this.schemaReady) return;
     const sql = this.ctx.storage.sql;
-    sql.exec(`
-      CREATE TABLE IF NOT EXISTS schema_metadata (
-        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-        version INTEGER NOT NULL
-      );
-    `);
-    const current = sql
-      .exec<{ version: number }>(
-        "SELECT version FROM schema_metadata WHERE singleton = 1",
-      )
-      .toArray()[0]?.version;
+    const current = this.hasSchema()
+      ? sql
+          .exec<{ version: number }>(
+            "SELECT version FROM schema_metadata WHERE singleton = 1",
+          )
+          .toArray()[0]?.version
+      : undefined;
     if (current === 1) sql.exec(MIGRATE_CHANNEL_V1_TO_V2);
     sql.exec(CHANNEL_SCHEMA);
     const version = sql
@@ -129,9 +130,11 @@ export class ChannelObject extends DurableObject<Env> {
     if (version !== CHANNEL_SCHEMA_VERSION) {
       throw new Error("Unsupported channel schema version");
     }
+    this.schemaReady = true;
   }
 
   provision(adminCapabilityDigest: string): ProvisionResult {
+    this.initializeSchema();
     const state = this.state();
     if (state.closed_at !== null) return { ok: false, code: "not_found" };
     if (state.provisioned_at !== null) {
@@ -269,6 +272,7 @@ export class ChannelObject extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
+    if (!this.hasSchema()) return;
     const pending = this.ctx.storage.sql
       .exec<{ app_id: string; batch_id: number; idempotency_key: string }>(
         `SELECT e.app_id, b.idempotency_key, b.batch_id
@@ -297,6 +301,7 @@ export class ChannelObject extends DurableObject<Env> {
   }
 
   markEnqueued(eventID: string, batchIDs: number[]): void {
+    if (!this.hasSchema()) return;
     for (const batchID of batchIDs) {
       this.ctx.storage.sql.exec(
         `UPDATE delivery_batches SET state = 'enqueued', updated_at = ?
@@ -864,6 +869,13 @@ export class ChannelObject extends DurableObject<Env> {
   }
 
   private state(): StateRow {
+    if (!this.hasSchema()) {
+      return {
+        provisioned_at: null,
+        admin_capability_digest: null,
+        closed_at: null,
+      };
+    }
     return (
       this.ctx.storage.sql
         .exec<StateRow>(
@@ -881,6 +893,18 @@ export class ChannelObject extends DurableObject<Env> {
   private isUsable(): boolean {
     const state = this.state();
     return state.provisioned_at !== null && state.closed_at === null;
+  }
+
+  private hasSchema(): boolean {
+    if (this.schemaReady !== undefined) return this.schemaReady;
+    const row = this.ctx.storage.sql
+      .exec<{ count: number }>(
+        `SELECT COUNT(*) AS count FROM sqlite_master
+         WHERE type = 'table' AND name = 'channel_state'`,
+      )
+      .one();
+    this.schemaReady = (row?.count ?? 0) === 1;
+    return this.schemaReady;
   }
 
   private takeRateLimit(
