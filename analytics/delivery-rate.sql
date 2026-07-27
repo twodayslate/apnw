@@ -7,6 +7,6 @@ SELECT
   IF(targeted = 0, 0, accepted / targeted) AS acceptance_rate
 FROM apnw_prod
 WHERE timestamp >= NOW() - INTERVAL '30' DAY
-  AND blob2 = 'publish'
+  AND blob2 IN ('publish', 'queue_delivery')
 GROUP BY day, app_id
 ORDER BY day DESC, app_id;

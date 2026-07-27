@@ -78,37 +78,40 @@ export default {
     env: Env,
   ): Promise<void> {
     if (!runtimeConfigurationConsistent(env)) {
-      console.error({
-        schema: 1,
-        level: "error",
-        operation: "queue_delivery",
-        outcome: "environment_mismatch",
-      });
+      for (const _message of batch.messages) {
+        emitTelemetry(env, queueContext(env), {
+          outcome: "environment_mismatch",
+          httpStatus: 503,
+        });
+      }
       batch.retryAll({ delaySeconds: 60 });
       return;
     }
     for (const message of batch.messages) {
       const body = message.body;
-      const app = getApp(body.appID);
-      if (
-        !app ||
-        !/^[0-9a-f]{64}$/.test(body.channelID) ||
-        !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
-          body.eventID,
-        ) ||
-        !Number.isInteger(body.batchID) ||
-        body.batchID < 0
-      ) {
-        console.warn({
-          schema: 1,
-          level: "warn",
-          operation: "queue_delivery",
-          outcome: "invalid_queue_message",
-        });
+      if (!isDeliveryQueueMessage(body)) {
         message.ack();
+        emitTelemetry(env, queueContext(env), {
+          outcome: "invalid_queue_message",
+          httpStatus: 400,
+        });
         continue;
       }
+      const app = getApp(body.appID);
+      if (!app) {
+        message.ack();
+        emitTelemetry(env, queueContext(env), {
+          outcome: "invalid_queue_message",
+          httpStatus: 400,
+        });
+        continue;
+      }
+      const context = queueContext(env, body.appID);
       try {
+        context.channelRef = await channelReference(
+          env.LOG_CORRELATION_KEY,
+          body.channelID,
+        );
         const stub = env.CHANNELS.get(env.CHANNELS.idFromString(body.channelID));
         const result = await stub.deliverBatch(
           body.eventID,
@@ -116,28 +119,40 @@ export default {
           app,
         );
         if (result.retryable) {
-          if (message.attempts >= 10) {
-            console.warn({
-              schema: 1,
-              level: "warn",
-              operation: "queue_delivery",
-              outcome: "delivery_near_dlq",
-            });
-          }
           message.retry({ delaySeconds: retryDelay(message.attempts) });
         } else {
           message.ack();
         }
+        emitTelemetry(env, context, {
+          outcome:
+            result.retryable && message.attempts >= 10
+              ? "delivery_near_dlq"
+              : result.retryable
+                ? "delivery_retry"
+                : "delivered",
+          httpStatus: result.retryable ? 503 : 200,
+          ...(result.event ? { event: result.event } : {}),
+          acceptedCount: result.accepted,
+          failedCount: result.failed,
+          invalidTokenRemovalCount: result.invalidRemoved,
+          apnsReason: result.apnsReason,
+          apnsReasonCounts: result.apnsReasonCounts,
+          apnsStatus: result.apnsStatus,
+          ...(result.apnsRequestID
+            ? { apnsRequestID: result.apnsRequestID }
+            : {}),
+          apnsLatencyTotalMs: result.apnsLatencyTotalMs,
+          apnsLatencyMaxMs: result.apnsLatencyMaxMs,
+        });
       } catch {
-        if (message.attempts >= 10) {
-          console.warn({
-            schema: 1,
-            level: "warn",
-            operation: "queue_delivery",
-            outcome: "exception_near_dlq",
-          });
-        }
         message.retry({ delaySeconds: retryDelay(message.attempts) });
+        emitTelemetry(env, context, {
+          outcome:
+            message.attempts >= 10
+              ? "exception_near_dlq"
+              : "delivery_exception",
+          httpStatus: 503,
+        });
       }
     }
   },
@@ -453,7 +468,11 @@ async function route(
         ? "completed"
         : result.state;
     const responseStatus =
-      result.mode === "queued" || deliveryDetails?.retryable ? 202 : 200;
+      result.mode === "queued" ||
+      deliveryDetails?.retryable ||
+      responseState !== "completed"
+        ? 202
+        : 200;
     return ok(
       {
         eventID: result.eventID,
@@ -466,6 +485,7 @@ async function route(
         httpStatus: responseStatus,
         event: body.event,
         idempotency: result.idempotency,
+        targetCount: result.idempotency === "new" ? result.targetCount : 0,
         ...(deliveryDetails
           ? {
               acceptedCount: deliveryDetails.accepted,
@@ -802,6 +822,36 @@ function requireUUID(value: unknown): string {
 
 function retryDelay(attempts: number): number {
   return Math.min(300, 2 ** Math.min(attempts, 8));
+}
+
+function queueContext(env: Env, appID?: string): RequestContext {
+  return {
+    ...(appID ? { appID } : {}),
+    deployment: env.APNS_ENVIRONMENT,
+    operation: "queue_delivery",
+    requestID: crypto.randomUUID(),
+    serviceVersion: env.SERVICE_VERSION,
+    startedAt: Date.now(),
+  };
+}
+
+function isDeliveryQueueMessage(
+  value: unknown,
+): value is DeliveryQueueMessage {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<DeliveryQueueMessage>;
+  return (
+    typeof candidate.appID === "string" &&
+    /^[a-z0-9_]{1,64}$/.test(candidate.appID) &&
+    typeof candidate.channelID === "string" &&
+    /^[0-9a-f]{64}$/.test(candidate.channelID) &&
+    typeof candidate.eventID === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      candidate.eventID,
+    ) &&
+    Number.isInteger(candidate.batchID) &&
+    (candidate.batchID ?? -1) >= 0
+  );
 }
 
 function emitTelemetry(

@@ -33,9 +33,7 @@ export function writeMetric(
         safeDimension(metric.outcome),
         `${Math.floor(metric.httpStatus / 100)}xx`,
         safeVersion(context.serviceVersion),
-        context.colo && /^[A-Z0-9]{3}$/.test(context.colo)
-          ? context.colo
-          : "unknown",
+        safeColo(context.colo),
         safeDimension(metric.event ?? "none"),
         safeDimension(metric.apnsReason ?? "none"),
         safeDimension(metric.idempotency ?? "none"),
@@ -81,8 +79,8 @@ export function writeApnsReasonMetrics(
           "apns_result",
           "error",
           "none",
-          context.serviceVersion,
-          context.colo ?? "unknown",
+          safeVersion(context.serviceVersion),
+          safeColo(context.colo),
           "none",
           safeDimension(reason),
           "none",
@@ -111,6 +109,10 @@ function safeVersion(value: string): string {
   return /^[A-Za-z0-9._-]{1,64}$/.test(value)
     ? value
     : "invalid-version";
+}
+
+function safeColo(value: string | undefined): string {
+  return value && /^[A-Z0-9]{3}$/.test(value) ? value : "unknown";
 }
 
 function safeAppID(value: string | undefined): string {

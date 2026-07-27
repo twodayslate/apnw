@@ -356,6 +356,60 @@ describe("APNW HTTP API", () => {
     expect(conflict.status).toBe(409);
   });
 
+  it("records the private target snapshot without exposing counts in the response", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const channelCapability = randomSecret();
+    const installationCapability = randomSecret();
+    await provision(channelCapability, randomSecret());
+    await call("/v1/apps/chain_of_custody/device", {
+      method: "PUT",
+      capability: channelCapability,
+      installationCapability,
+      json: {
+        installationID: randomSecret(),
+        deviceToken: "1234abcd",
+      },
+    });
+    vi.stubGlobal("fetch", async () => new Response(null, { status: 200 }));
+    const writeDataPoint = vi.fn();
+    const idempotencyKey = crypto.randomUUID();
+    const eventCreatedAt = new Date().toISOString();
+    const request = (): Request =>
+      new Request("https://apnw.test/v1/apps/chain_of_custody/events", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${channelCapability}`,
+          "content-type": "application/json",
+          "event-created-at": eventCreatedAt,
+          "idempotency-key": idempotencyKey,
+        },
+        body: JSON.stringify({ event: "check_requested" }),
+      });
+    const telemetryEnv = {
+      ...env,
+      APNW_ANALYTICS: { writeDataPoint },
+    };
+    const response = await workerHandler.fetch(request(), telemetryEnv);
+    const duplicate = await workerHandler.fetch(request(), telemetryEnv);
+
+    expect(response.status).toBe(200);
+    expect(Object.keys((await response.json()) as object).sort()).toEqual([
+      "deliveryMode",
+      "eventID",
+      "state",
+    ]);
+    expect(duplicate.status).toBe(200);
+    const publishPoints = writeDataPoint.mock.calls
+      .map((call) => call[0])
+      .filter((point) => point.blobs?.[1] === "publish");
+    expect(publishPoints[0]?.doubles?.[2]).toBe(1);
+    expect(publishPoints[0]?.doubles?.[3]).toBe(1);
+    expect(publishPoints[1]?.blobs?.[8]).toBe("duplicate");
+    expect(publishPoints[1]?.doubles?.[2]).toBe(0);
+    log.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
   it("requires the independent admin capability to close a channel", async () => {
     const channelCapability = randomSecret();
     const adminCapability = randomSecret();

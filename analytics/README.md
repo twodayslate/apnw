@@ -33,7 +33,8 @@ Analytics Engine may sample data. Counts therefore multiply values by
 `_sample_interval`. Percentiles operate on the retained samples.
 
 Queued delivery health is monitored with Cloudflare Queue built-in depth, age,
-retry, and DLQ metrics. The request point records durable acceptance; it does
-not pretend that asynchronous APNs results completed inside the HTTP request.
-Direct-delivery aggregate counts remain operator-only and are never returned by
-the public API.
+retry, and DLQ metrics. The publish request point records the durably accepted
+target snapshot, while later `queue_delivery` points record asynchronous APNs
+outcomes. `delivery-rate.sql` combines the two without pretending queued results
+completed inside the HTTP request. Delivery counts remain operator-only and are
+never returned by the public API.

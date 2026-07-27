@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { writeMetric } from "../src/observability/analytics";
+import {
+  writeApnsReasonMetrics,
+  writeMetric,
+} from "../src/observability/analytics";
 import {
   writeCompletionLog,
 } from "../src/observability/logger";
@@ -89,5 +92,31 @@ describe("aggregate analytics", () => {
     expect(serialized).toContain("invalid_dimension");
     expect(serialized).toContain("invalid-version");
     log.mockRestore();
+  });
+
+  it("sanitizes every dimension in per-reason APNs metrics", () => {
+    const writeDataPoint = vi.fn();
+    const secret = "attacker controlled value";
+    writeApnsReasonMetrics(
+      {
+        APNW_ANALYTICS: { writeDataPoint },
+      } as unknown as Env,
+      {
+        appID: "chain_of_custody",
+        colo: secret,
+        deployment: "development",
+        operation: "queue_delivery",
+        requestID: crypto.randomUUID(),
+        serviceVersion: secret,
+        startedAt: Date.now(),
+      },
+      { "not reviewed": 1 },
+    );
+
+    const serialized = JSON.stringify(writeDataPoint.mock.calls[0]?.[0]);
+    expect(serialized).not.toContain(secret);
+    expect(serialized).toContain("invalid-version");
+    expect(serialized).toContain("invalid_dimension");
+    expect(serialized).toContain("unknown");
   });
 });

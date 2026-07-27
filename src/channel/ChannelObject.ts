@@ -61,6 +61,7 @@ export interface PublishSuccess {
   mode: "direct" | "queued";
   pendingBatchIDs: number[];
   state: "accepted" | "delivering" | "completed";
+  targetCount: number;
 }
 
 export type PublishResult = PublishSuccess | MutationFailure;
@@ -78,6 +79,7 @@ export interface DeliveryResult {
   apnsReasonCounts: Partial<Record<ApnsReason, number>>;
   apnsRequestID?: string;
   apnsStatus: number;
+  event?: string;
   failed: number;
   invalidRemoved: number;
   retryable: boolean;
@@ -91,6 +93,7 @@ interface StateRow extends Record<string, SqlStorageValue> {
 
 interface EventRow extends Record<string, SqlStorageValue> {
   delivery_mode: "direct" | "queued";
+  device_count: number;
   request_fingerprint: string;
   state: "accepted" | "delivering" | "completed";
 }
@@ -408,7 +411,8 @@ export class ChannelObject extends DurableObject<Env> {
     const sql = this.ctx.storage.sql;
     const existing = sql
       .exec<EventRow>(
-        `SELECT request_fingerprint, delivery_mode, state FROM events
+        `SELECT request_fingerprint, delivery_mode, state, device_count
+         FROM events
          WHERE idempotency_key = ?`,
         input.idempotencyKey,
       )
@@ -424,6 +428,7 @@ export class ChannelObject extends DurableObject<Env> {
         mode: existing.delivery_mode,
         pendingBatchIDs: this.pendingBatchIDs(input.idempotencyKey),
         state: existing.state,
+        targetCount: existing.device_count,
       };
     }
 
@@ -504,6 +509,7 @@ export class ChannelObject extends DurableObject<Env> {
       mode,
       pendingBatchIDs: Array.from({ length: batchCount }, (_, index) => index),
       state: installations.length === 0 ? "completed" : "accepted",
+      targetCount: installations.length,
     };
   }
 
@@ -694,6 +700,7 @@ export class ChannelObject extends DurableObject<Env> {
       apnsReasonCounts,
       ...(apnsRequestID ? { apnsRequestID } : {}),
       apnsStatus,
+      event: event.event_name,
       failed,
       invalidRemoved,
       retryable,
