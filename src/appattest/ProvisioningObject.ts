@@ -3,7 +3,10 @@ import { getApp, type AppConfig } from "../apps";
 import { encodeBase64Url } from "../auth";
 import { getProviderToken } from "../apns/jwt";
 import type { Env } from "../types";
-import { verifyAppAttestReceipt } from "./receipt";
+import {
+  verifyAppAttestReceipt,
+  type AppAttestReceiptClaims,
+} from "./receipt";
 import {
   AppAttestVerificationError,
   verifyAssertion,
@@ -46,15 +49,17 @@ interface KeyRow extends Record<string, SqlStorageValue> {
   app_id: string;
   public_key_spki: string;
   assertion_counter: number;
-  fraud_status: string;
+  fraud_status: FraudStatus;
 }
+
+type FraudStatus = "accepted" | "blocked" | "error" | "pending";
 
 interface FraudRow extends Record<string, SqlStorageValue> {
   key_id: string;
   app_id: string;
   public_key_spki: string;
   fraud_receipt: string;
-  fraud_status: "accepted" | "blocked" | "error" | "pending";
+  fraud_status: FraudStatus;
   fraud_attempt_count: number;
 }
 
@@ -245,6 +250,16 @@ export class ProvisioningObject extends DurableObject<Env> {
       ) {
         return { ok: false, code: "invalid_attestation" };
       }
+      const initialReceipt = await verifyInitialReceipt({
+        app: input.app,
+        publicKeySpki: verified.publicKeySpki,
+        receipt: verified.receipt,
+        rootCertificatePem: this.env.APP_ATTEST_ROOT_CERT_PEM,
+        teamID: this.env.APNS_TEAM_ID,
+      });
+      if (initialReceipt.receiptType !== "ATTEST") {
+        return { ok: false, code: "invalid_attestation" };
+      }
       const now = Date.now();
       this.ctx.storage.sql.exec(
         `INSERT INTO app_attest_keys(
@@ -256,13 +271,7 @@ export class ProvisioningObject extends DurableObject<Env> {
         ON CONFLICT(key_id) DO UPDATE SET
           last_used_at = excluded.last_used_at,
           validation_category = excluded.validation_category,
-          bundle_version = excluded.bundle_version,
-          fraud_receipt = excluded.fraud_receipt,
-          fraud_status = 'pending',
-          fraud_assessed_at = NULL,
-          fraud_attempt_count = 0,
-          fraud_next_attempt_at = excluded.fraud_next_attempt_at,
-          fraud_risk_metric = NULL`,
+          bundle_version = excluded.bundle_version`,
         keyReference,
         input.appID,
         verified.publicKeySpki,
@@ -276,6 +285,15 @@ export class ProvisioningObject extends DurableObject<Env> {
       // Exchange and verify the untrusted receipt immediately when Apple is
       // available. Transient failures remain pending and are retried by alarm.
       await this.assessFraud(keyReference);
+      const fraudStatus = this.ctx.storage.sql
+        .exec<{ fraud_status: FraudStatus }>(
+          "SELECT fraud_status FROM app_attest_keys WHERE key_id = ?",
+          keyReference,
+        )
+        .one()?.fraud_status;
+      if (!fraudStatus || !isProvisioningEligibleFraudStatus(fraudStatus)) {
+        return { ok: false, code: "invalid_attestation" };
+      }
       return { ok: true, registered: !existing };
     } catch (error) {
       if (error instanceof AppAttestVerificationError) {
@@ -335,7 +353,7 @@ export class ProvisioningObject extends DurableObject<Env> {
     if (
       !key ||
       key.app_id !== input.appID ||
-      key.fraud_status === "blocked"
+      !isProvisioningEligibleFraudStatus(key.fraud_status)
     ) {
       return { ok: false, code: "invalid_attestation" };
     }
@@ -549,9 +567,7 @@ export class ProvisioningObject extends DurableObject<Env> {
           row.fraud_attempt_count,
           row.fraud_status === "blocked"
             ? "blocked"
-            : response.status === 400 || response.status === 401
-              ? "error"
-              : "pending",
+            : fraudStatusForHttpFailure(response.status),
         );
         return;
       }
@@ -565,6 +581,9 @@ export class ProvisioningObject extends DurableObject<Env> {
         requireRiskMetric: true,
         rootCertificatePem: this.env.APP_ATTEST_ROOT_CERT_PEM,
       });
+      if (claims.receiptType !== "RECEIPT") {
+        throw new Error("Invalid refreshed App Attest receipt");
+      }
       const status =
         claims.riskMetric! > app.appAttest.maxFraudRiskMetric
           ? "blocked"
@@ -602,7 +621,7 @@ export class ProvisioningObject extends DurableObject<Env> {
   private markFraudRetry(
     keyReference: string,
     previousAttempts: number,
-    status: "accepted" | "blocked" | "pending" | "error",
+    status: FraudStatus,
     fixedDelay?: number,
   ): void {
     const attempts = previousAttempts + 1;
@@ -636,6 +655,36 @@ export class ProvisioningObject extends DurableObject<Env> {
     if (next !== undefined) {
       await this.ctx.storage.setAlarm(Math.max(Date.now() + 1_000, next));
     }
+  }
+}
+
+export function isProvisioningEligibleFraudStatus(
+  status: string,
+): boolean {
+  return status === "accepted" || status === "pending";
+}
+
+export function fraudStatusForHttpFailure(status: number): FraudStatus {
+  return status === 429 || status >= 500 ? "pending" : "error";
+}
+
+async function verifyInitialReceipt(input: {
+  app: AppConfig;
+  publicKeySpki: string;
+  receipt: Uint8Array;
+  rootCertificatePem: string;
+  teamID: string;
+}): Promise<AppAttestReceiptClaims> {
+  try {
+    return await verifyAppAttestReceipt({
+      expectedAppID: `${input.teamID}.${input.app.bundleID}`,
+      expectedPublicKeySpki: input.publicKeySpki,
+      receipt: input.receipt,
+      requireRiskMetric: false,
+      rootCertificatePem: input.rootCertificatePem,
+    });
+  } catch {
+    throw new AppAttestVerificationError();
   }
 }
 

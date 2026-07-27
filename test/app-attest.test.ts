@@ -11,6 +11,10 @@ import * as asn1js from "asn1js";
 import { encode } from "cbor-x";
 import { describe, expect, it } from "vitest";
 import type { AppConfig } from "../src/apps";
+import {
+  fraudStatusForHttpFailure,
+  isProvisioningEligibleFraudStatus,
+} from "../src/appattest/ProvisioningObject";
 import { parseAppAttestReceiptPayload } from "../src/appattest/receipt";
 import {
   verifyAssertion,
@@ -232,6 +236,18 @@ describe("App Attest verifier", () => {
     expect(() => parseAppAttestReceiptPayload(malformedKey)).toThrow(
       "Invalid App Attest receipt field",
     );
+  });
+
+  it("fails closed for permanent fraud-receipt failures", () => {
+    expect(fraudStatusForHttpFailure(400)).toBe("error");
+    expect(fraudStatusForHttpFailure(401)).toBe("error");
+    expect(fraudStatusForHttpFailure(404)).toBe("error");
+    expect(fraudStatusForHttpFailure(429)).toBe("pending");
+    expect(fraudStatusForHttpFailure(503)).toBe("pending");
+    expect(isProvisioningEligibleFraudStatus("error")).toBe(false);
+    expect(isProvisioningEligibleFraudStatus("blocked")).toBe(false);
+    expect(isProvisioningEligibleFraudStatus("pending")).toBe(true);
+    expect(isProvisioningEligibleFraudStatus("accepted")).toBe(true);
   });
 
 });
