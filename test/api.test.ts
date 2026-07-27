@@ -1,21 +1,18 @@
+import { env } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
+import {
+  capabilityDigest,
+  deriveChannelName,
+  encodeBase64Url,
+} from "../src/auth";
 
-const capabilityA =
-  "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXphYmNkZWY";
-const capabilityB =
-  "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY";
-const capabilityC =
-  "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY";
-const capabilityD =
-  "eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHg";
-const installationID = "f85f665c-79d1-4eea-b87c-65f8476e5a88";
 const worker = exports as unknown as {
   default: { fetch(request: Request): Promise<Response> };
 };
 
 describe("APNW HTTP API", () => {
-  it("returns a minimal health response", async () => {
+  it("returns a minimal, hardened health response", async () => {
     const response = await call("/health");
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
@@ -24,255 +21,355 @@ describe("APNW HTTP API", () => {
       version: "local",
     });
     expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("strict-transport-security")).toContain(
+      "max-age=",
+    );
   });
 
-  it("keeps unknown apps and bad capabilities opaque", async () => {
-    const unknown = await call(
-      "/v1/apps/not_registered/devices/f85f665c-79d1-4eea-b87c-65f8476e5a88",
-      { method: "DELETE", capability: capabilityA },
-    );
+  it("keeps unknown apps, bad capabilities, and unprovisioned channels opaque", async () => {
+    const capability = randomSecret();
+    const installation = randomSecret();
+    const unknown = await call("/v1/apps/not_registered/device", {
+      method: "DELETE",
+      capability,
+      installationCapability: installation,
+      json: { installationID: randomSecret() },
+    });
     const unauthenticated = await call(
-      `/v1/apps/chain_of_custody/devices/${installationID}`,
-      { method: "DELETE" },
+      "/v1/apps/chain_of_custody/device",
+      {
+        method: "DELETE",
+        installationCapability: installation,
+        json: { installationID: randomSecret() },
+      },
+    );
+    const unprovisioned = await call(
+      "/v1/apps/chain_of_custody/device",
+      {
+        method: "PUT",
+        capability,
+        installationCapability: installation,
+        json: {
+          installationID: randomSecret(),
+          deviceToken: "aabbccdd",
+        },
+      },
     );
     expect(unknown.status).toBe(404);
     expect(unauthenticated.status).toBe(404);
-    expect(await unknown.json()).toEqual(await unauthenticated.json());
+    expect(unprovisioned.status).toBe(404);
+    const opaqueBody = await unauthenticated.json();
+    expect(await unknown.json()).toEqual(opaqueBody);
+    expect(await unprovisioned.json()).toEqual(opaqueBody);
   });
 
-  it("registers, updates, and idempotently unregisters a device", async () => {
-    const path = `/v1/apps/chain_of_custody/devices/${installationID}`;
-    const first = await call(path, {
-      method: "PUT",
-      capability: capabilityA,
-      json: { deviceToken: "aabbccdd" },
-    });
-    const repeat = await call(path, {
-      method: "PUT",
-      capability: capabilityA,
-      json: { deviceToken: "00112233" },
-    });
-    const removed = await call(path, {
-      method: "DELETE",
-      capability: capabilityA,
-    });
-    const removedAgain = await call(path, {
-      method: "DELETE",
-      capability: capabilityA,
-    });
-    expect(first.status).toBe(201);
-    expect(repeat.status).toBe(200);
-    expect(removed.status).toBe(200);
-    expect(removedAgain.status).toBe(200);
-  });
+  it("requires the installation capability for device churn", async () => {
+    const channelCapability = randomSecret();
+    const adminCapability = randomSecret();
+    const installationCapability = randomSecret();
+    const wrongInstallationCapability = randomSecret();
+    const installationID = randomSecret();
+    await provision(channelCapability, adminCapability);
 
-  it("rejects unknown fields before accessing channel state", async () => {
-    const response = await call(
-      `/v1/apps/chain_of_custody/devices/${installationID}`,
+    const first = await call("/v1/apps/chain_of_custody/device", {
+      method: "PUT",
+      capability: channelCapability,
+      installationCapability,
+      json: { installationID, deviceToken: "aabbccdd" },
+    });
+    const unauthorizedUpdate = await call(
+      "/v1/apps/chain_of_custody/device",
       {
         method: "PUT",
-        capability: capabilityB,
-        json: { deviceToken: "aabbccdd", title: "not allowed" },
+        capability: channelCapability,
+        installationCapability: wrongInstallationCapability,
+        json: { installationID, deviceToken: "00112233" },
       },
     );
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({
-      error: { code: "invalid_request", message: "Invalid request" },
-    });
-  });
-
-  it("rejects oversized bodies and lookalike JSON media types", async () => {
-    const path = `/v1/apps/chain_of_custody/devices/${installationID}`;
-    const oversized = await worker.default.fetch(
-      new Request(`https://apnw.test${path}`, {
-        method: "PUT",
-        headers: {
-          authorization: `Bearer ${capabilityC}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ deviceToken: "aa", padding: "x".repeat(9_000) }),
-      }),
-    );
-    const lookalike = await worker.default.fetch(
-      new Request(`https://apnw.test${path}`, {
-        method: "PUT",
-        headers: {
-          authorization: `Bearer ${capabilityC}`,
-          "content-type": "application/json-patch+json",
-        },
-        body: JSON.stringify({ deviceToken: "aa" }),
-      }),
-    );
-    expect(oversized.status).toBe(413);
-    expect(lookalike.status).toBe(415);
-  });
-
-  it("excludes the sender and returns a stored result on repeat", async () => {
-    const devicePath = `/v1/apps/chain_of_custody/devices/${installationID}`;
-    await call(devicePath, {
+    const updated = await call("/v1/apps/chain_of_custody/device", {
       method: "PUT",
-      capability: capabilityB,
-      json: { deviceToken: "deadbeef" },
+      capability: channelCapability,
+      installationCapability,
+      json: { installationID, deviceToken: "00112233" },
     });
-    const request = {
-      method: "POST",
-      capability: capabilityB,
-      headers: { "idempotency-key": "event-sender-excluded" },
+    const unauthorizedRemoval = await call(
+      "/v1/apps/chain_of_custody/device",
+      {
+        method: "DELETE",
+        capability: channelCapability,
+        installationCapability: wrongInstallationCapability,
+        json: { installationID },
+      },
+    );
+    const removed = await call("/v1/apps/chain_of_custody/device", {
+      method: "DELETE",
+      capability: channelCapability,
+      installationCapability,
+      json: { installationID },
+    });
+    expect(first.status).toBe(201);
+    expect(unauthorizedUpdate.status).toBe(404);
+    expect(updated.status).toBe(200);
+    expect(unauthorizedRemoval.status).toBe(404);
+    expect(removed.status).toBe(200);
+  });
+
+  it("rejects unknown and duplicate JSON fields plus oversized bodies", async () => {
+    const channelCapability = randomSecret();
+    const adminCapability = randomSecret();
+    const installationCapability = randomSecret();
+    await provision(channelCapability, adminCapability);
+    const headers = {
+      authorization: `Bearer ${channelCapability}`,
+      "x-installation-authorization": `Bearer ${installationCapability}`,
+      "content-type": "application/json",
+    };
+    const unknown = await worker.default.fetch(
+      new Request("https://apnw.test/v1/apps/chain_of_custody/device", {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({
+          installationID: randomSecret(),
+          deviceToken: "aa",
+          title: "not allowed",
+        }),
+      }),
+    );
+    const duplicate = await worker.default.fetch(
+      new Request("https://apnw.test/v1/apps/chain_of_custody/device", {
+        method: "PUT",
+        headers,
+        body: `{"installationID":"${randomSecret()}","deviceToken":"aa","device\\u0054oken":"bb"}`,
+      }),
+    );
+    const oversized = await worker.default.fetch(
+      new Request("https://apnw.test/v1/apps/chain_of_custody/device", {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({
+          installationID: randomSecret(),
+          deviceToken: "aa",
+          padding: "x".repeat(9_000),
+        }),
+      }),
+    );
+    expect(unknown.status).toBe(400);
+    expect(duplicate.status).toBe(400);
+    expect(oversized.status).toBe(413);
+  });
+
+  it("binds exclusions to the sender installation capability", async () => {
+    const channelCapability = randomSecret();
+    const adminCapability = randomSecret();
+    const installationCapability = randomSecret();
+    const installationID = randomSecret();
+    await provision(channelCapability, adminCapability);
+    await call("/v1/apps/chain_of_custody/device", {
+      method: "PUT",
+      capability: channelCapability,
+      installationCapability,
+      json: { installationID, deviceToken: "deadbeef" },
+    });
+    const idempotencyKey = crypto.randomUUID();
+    const eventCreatedAt = new Date().toISOString();
+    const wrong = await publish(channelCapability, {
+      idempotencyKey,
+      eventCreatedAt,
+      installationCapability: randomSecret(),
       json: {
         event: "submission_ready",
         excludeInstallationID: installationID,
-        route: "coc://submission/example",
       },
-    } as const;
-    const first = await call("/v1/apps/chain_of_custody/events", request);
-    const repeat = await call("/v1/apps/chain_of_custody/events", request);
+    });
+    const first = await publish(channelCapability, {
+      idempotencyKey,
+      eventCreatedAt,
+      installationCapability,
+      json: {
+        event: "submission_ready",
+        excludeInstallationID: installationID,
+      },
+    });
+    const repeat = await publish(channelCapability, {
+      idempotencyKey,
+      eventCreatedAt,
+      installationCapability,
+      json: {
+        event: "submission_ready",
+        excludeInstallationID: installationID,
+      },
+    });
+    expect(wrong.status).toBe(404);
     expect(first.status).toBe(200);
-    expect(await first.json()).toMatchObject({
-      deviceCount: 0,
-      accepted: 0,
-      failed: 0,
-      retryable: false,
+    expect(await first.json()).toEqual({
+      eventID: idempotencyKey,
+      deliveryMode: "direct",
+      state: "completed",
     });
     expect(await repeat.json()).toEqual({
-      eventID: "event-sender-excluded",
-      deviceCount: 0,
-      accepted: 0,
-      failed: 0,
-      retryable: false,
+      eventID: idempotencyKey,
+      deliveryMode: "direct",
+      state: "completed",
     });
   });
 
-  it("isolates channels and keeps a closed channel tombstoned", async () => {
-    const path = `/v1/apps/chain_of_custody/devices/${installationID}`;
-    await call(path, {
-      method: "PUT",
-      capability: capabilityA,
-      json: { deviceToken: "cafebabe" },
+  it("requires UUIDv4 idempotency and a recent client timestamp", async () => {
+    const channelCapability = randomSecret();
+    await provision(channelCapability, randomSecret());
+    const invalidKey = await call("/v1/apps/chain_of_custody/events", {
+      method: "POST",
+      capability: channelCapability,
+      headers: {
+        "idempotency-key": "not-a-uuid",
+        "event-created-at": new Date().toISOString(),
+      },
+      json: { event: "check_requested" },
     });
-    const otherChannelPublish = await call(
+    const stale = await call("/v1/apps/chain_of_custody/events", {
+      method: "POST",
+      capability: channelCapability,
+      headers: {
+        "idempotency-key": crypto.randomUUID(),
+        "event-created-at": new Date(Date.now() - 73 * 60 * 60 * 1_000).toISOString(),
+      },
+      json: { event: "check_requested" },
+    });
+    const impossibleDate = await call(
       "/v1/apps/chain_of_custody/events",
       {
         method: "POST",
-        capability: capabilityC,
-        headers: { "idempotency-key": "other-channel-event" },
+        capability: channelCapability,
+        headers: {
+          "idempotency-key": crypto.randomUUID(),
+          "event-created-at": `${new Date().getUTCFullYear()}-02-30T12:00:00Z`,
+        },
         json: { event: "check_requested" },
       },
     );
-    expect(await otherChannelPublish.json()).toMatchObject({ deviceCount: 0 });
+    expect(invalidKey.status).toBe(400);
+    expect(stale.status).toBe(400);
+    expect(impossibleDate.status).toBe(400);
+  });
 
+  it("keeps responses count-free and rejects idempotency reuse with different content", async () => {
+    const channelCapability = randomSecret();
+    await provision(channelCapability, randomSecret());
+    const idempotencyKey = crypto.randomUUID();
+    const first = await publish(channelCapability, {
+      idempotencyKey,
+      json: { event: "check_requested" },
+    });
+    const conflict = await publish(channelCapability, {
+      idempotencyKey,
+      json: { event: "decision_available" },
+    });
+    const body = (await first.json()) as Record<string, unknown>;
+    expect(first.status).toBe(200);
+    expect(Object.keys(body).sort()).toEqual([
+      "deliveryMode",
+      "eventID",
+      "state",
+    ]);
+    expect(conflict.status).toBe(409);
+  });
+
+  it("requires the independent admin capability to close a channel", async () => {
+    const channelCapability = randomSecret();
+    const adminCapability = randomSecret();
+    await provision(channelCapability, adminCapability);
+    const wrong = await call("/v1/apps/chain_of_custody/channel", {
+      method: "DELETE",
+      capability: channelCapability,
+      adminCapability: randomSecret(),
+    });
     const closed = await call("/v1/apps/chain_of_custody/channel", {
       method: "DELETE",
-      capability: capabilityA,
+      capability: channelCapability,
+      adminCapability,
     });
-    const rejected = await call(path, {
-      method: "PUT",
-      capability: capabilityA,
-      json: { deviceToken: "cafebabe" },
+    const rejected = await publish(channelCapability, {
+      idempotencyKey: crypto.randomUUID(),
+      json: { event: "check_requested" },
     });
+    expect(wrong.status).toBe(404);
     expect(closed.status).toBe(200);
     expect(rejected.status).toBe(404);
   });
 
-  it("retries only transient APNs targets", async () => {
-    const firstInstallation = "5111eab4-a2c1-4df0-ab48-59b727dd6591";
-    const secondInstallation = "bbbd4091-7f4c-4501-8862-8c9bd748c11b";
-    await call(
-      `/v1/apps/chain_of_custody/devices/${firstInstallation}`,
-      {
-        method: "PUT",
-        capability: capabilityD,
-        json: { deviceToken: "aaaaaaaa" },
-      },
-    );
-    await call(
-      `/v1/apps/chain_of_custody/devices/${secondInstallation}`,
-      {
-        method: "PUT",
-        capability: capabilityD,
-        json: { deviceToken: "bbbbbbbb" },
-      },
-    );
-
-    const attempts = new Map<string, number>();
-    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
-      const url = String(input);
-      const token = url.split("/").at(-1) ?? "";
-      attempts.set(token, (attempts.get(token) ?? 0) + 1);
-      if (token === "bbbbbbbb" && attempts.get(token) === 1) {
-        return Response.json(
-          { reason: "ServiceUnavailable" },
-          { status: 503 },
-        );
-      }
-      return new Response(null, { status: 200 });
-    });
-
-    const options = {
-      method: "POST",
-      capability: capabilityD,
-      headers: { "idempotency-key": "partial-retry-event" },
-      json: { event: "decision_available" },
-    } as const;
-    const first = await call("/v1/apps/chain_of_custody/events", options);
-    const retry = await call("/v1/apps/chain_of_custody/events", options);
-    expect(first.status).toBe(503);
-    expect(await first.json()).toMatchObject({
-      deviceCount: 2,
-      accepted: 1,
-      retryable: true,
-    });
-    expect(retry.status).toBe(200);
-    expect(await retry.json()).toMatchObject({
-      deviceCount: 2,
-      accepted: 2,
-      retryable: false,
-    });
-    expect(attempts.get("aaaaaaaa")).toBe(1);
-    expect(attempts.get("bbbbbbbb")).toBe(2);
-    vi.unstubAllGlobals();
-  });
-
   it("emits one reviewed completion log without request secrets", async () => {
+    const channelCapability = randomSecret();
+    const adminCapability = randomSecret();
+    const installationCapability = randomSecret();
+    const installationID = randomSecret();
+    await provision(channelCapability, adminCapability);
     const spy = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    const secretToken = "feedface";
-    const response = await call(
-      `/v1/apps/chain_of_custody/devices/${installationID}`,
-      {
-        method: "PUT",
-        capability: capabilityA,
-        json: { deviceToken: secretToken },
-      },
-    );
-    expect(response.status).toBeLessThan(500);
+    const response = await call("/v1/apps/chain_of_custody/device", {
+      method: "PUT",
+      capability: channelCapability,
+      installationCapability,
+      json: { installationID, deviceToken: "feedface" },
+    });
+    expect(response.status).toBe(201);
     expect(spy).toHaveBeenCalledTimes(1);
     const serialized = JSON.stringify(spy.mock.calls[0]?.[0]);
-    expect(serialized).not.toContain(capabilityA);
-    expect(serialized).not.toContain(secretToken);
+    expect(serialized).not.toContain(channelCapability);
+    expect(serialized).not.toContain(installationCapability);
+    expect(serialized).not.toContain("feedface");
     expect(serialized).not.toContain(installationID);
     expect(spy.mock.calls[0]?.[0]).toMatchObject({
-      schema: 1,
       operation: "register",
       appID: "chain_of_custody",
     });
     spy.mockRestore();
   });
-
-  it("does not expose state-listing or history routes", async () => {
-    for (const path of [
-      "/v1/apps/chain_of_custody/devices",
-      "/v1/apps/chain_of_custody/events/history",
-      "/v1/apps/chain_of_custody/stats",
-    ]) {
-      expect((await call(path, { capability: capabilityA })).status).toBe(404);
-    }
-  });
 });
+
+async function provision(
+  channelCapability: string,
+  adminCapability: string,
+): Promise<void> {
+  const name = await deriveChannelName(
+    "chain_of_custody",
+    channelCapability,
+  );
+  const digest = await capabilityDigest(
+    "admin",
+    "chain_of_custody",
+    adminCapability,
+  );
+  const stub = env.CHANNELS.get(env.CHANNELS.idFromName(name));
+  const result = await stub.provision(digest);
+  expect(result.ok).toBe(true);
+}
+
+function publish(
+  capability: string,
+  options: {
+    idempotencyKey: string;
+    eventCreatedAt?: string;
+    installationCapability?: string;
+    json: object;
+  },
+): Promise<Response> {
+  return call("/v1/apps/chain_of_custody/events", {
+    method: "POST",
+    capability,
+    installationCapability: options.installationCapability,
+    headers: {
+      "idempotency-key": options.idempotencyKey,
+      "event-created-at": options.eventCreatedAt ?? new Date().toISOString(),
+    },
+    json: options.json,
+  });
+}
 
 async function call(
   path: string,
   options: {
     method?: string;
     capability?: string;
+    adminCapability?: string;
+    installationCapability?: string;
     json?: object;
     headers?: Record<string, string>;
   } = {},
@@ -280,6 +377,18 @@ async function call(
   const headers = new Headers(options.headers);
   if (options.capability) {
     headers.set("authorization", `Bearer ${options.capability}`);
+  }
+  if (options.adminCapability) {
+    headers.set(
+      "x-channel-admin-authorization",
+      `Bearer ${options.adminCapability}`,
+    );
+  }
+  if (options.installationCapability) {
+    headers.set(
+      "x-installation-authorization",
+      `Bearer ${options.installationCapability}`,
+    );
   }
   if (options.json) headers.set("content-type", "application/json");
   return worker.default.fetch(
@@ -289,4 +398,8 @@ async function call(
       body: options.json ? JSON.stringify(options.json) : undefined,
     }),
   );
+}
+
+function randomSecret(): string {
+  return encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)));
 }
