@@ -14,6 +14,8 @@ import {
 const EVENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const DELIVERY_BATCH_SIZE = 100;
 const DIRECT_DELIVERY_MAX = 20;
+const DELIVERY_OUTBOX_RETRY_MS = 10_000;
+export const DELIVERY_PROCESSING_LEASE_MS = 30_000;
 const REGISTRATION_MUTATIONS_PER_MINUTE = 300;
 const PUBLISHES_PER_MINUTE = 30;
 const CLOSE_ATTEMPTS_PER_MINUTE = 5;
@@ -273,18 +275,25 @@ export class ChannelObject extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
-    if (!this.hasSchema()) return;
-    const pending = this.ctx.storage.sql
-      .exec<{ app_id: string; batch_id: number; idempotency_key: string }>(
+    if (!this.prepareExistingSchema()) return;
+    const staleProcessingCutoff = Date.now() - DELIVERY_PROCESSING_LEASE_MS;
+    const recoverable = this.ctx.storage.sql
+      .exec<{
+        app_id: string;
+        batch_id: number;
+        idempotency_key: string;
+      }>(
         `SELECT e.app_id, b.idempotency_key, b.batch_id
          FROM delivery_batches b
          JOIN events e ON e.idempotency_key = b.idempotency_key
          WHERE b.state = 'pending'
+           OR (b.state = 'processing' AND b.updated_at <= ?)
          ORDER BY b.idempotency_key, b.batch_id`,
+        staleProcessingCutoff,
       )
       .toArray();
-    for (let offset = 0; offset < pending.length; offset += 100) {
-      const group = pending.slice(offset, offset + 100);
+    for (let offset = 0; offset < recoverable.length; offset += 100) {
+      const group = recoverable.slice(offset, offset + 100);
       await this.env.DELIVERY_QUEUE.sendBatch(
         group.map((row) => ({
           body: {
@@ -296,9 +305,26 @@ export class ChannelObject extends DurableObject<Env> {
         })),
       );
       for (const row of group) {
-        this.markEnqueued(row.idempotency_key, [row.batch_id]);
+        this.ctx.storage.sql.exec(
+          `UPDATE delivery_batches SET state = 'enqueued', updated_at = ?
+           WHERE idempotency_key = ? AND batch_id = ?
+             AND (
+               state = 'pending'
+               OR (state = 'processing' AND updated_at <= ?)
+             )`,
+          Date.now(),
+          row.idempotency_key,
+          row.batch_id,
+          staleProcessingCutoff,
+        );
+        this.ctx.storage.sql.exec(
+          `UPDATE events SET state = 'delivering'
+           WHERE idempotency_key = ? AND state = 'accepted'`,
+          row.idempotency_key,
+        );
       }
     }
+    await this.scheduleDeliveryRecoveryAlarm();
   }
 
   markEnqueued(eventID: string, batchIDs: number[]): void {
@@ -469,7 +495,7 @@ export class ChannelObject extends DurableObject<Env> {
       input.idempotencyKey,
     );
     if (batchCount > 0) {
-      this.ctx.waitUntil(this.ctx.storage.setAlarm(Date.now() + 10_000));
+      this.ctx.waitUntil(this.scheduleDeliveryRecoveryAlarm());
     }
     return {
       ok: true,
@@ -510,6 +536,16 @@ export class ChannelObject extends DurableObject<Env> {
     if (!batch || batch.state === "completed") return empty();
     const sql = this.ctx.storage.sql;
     const now = Date.now();
+    const ambiguousCount =
+      sql
+        .exec<CountRow>(
+          `SELECT COUNT(*) AS count FROM event_deliveries
+           WHERE idempotency_key = ? AND batch_id = ?
+             AND status = 'attempting'`,
+          eventID,
+          batchID,
+        )
+        .one()?.count ?? 0;
     sql.exec(
       `UPDATE event_deliveries SET status = 'unknown', updated_at = ?
        WHERE idempotency_key = ? AND batch_id = ? AND status = 'attempting'`,
@@ -547,7 +583,7 @@ export class ChannelObject extends DurableObject<Env> {
     const payload = buildPayload(app, event.event_name);
 
     let accepted = 0;
-    let failed = 0;
+    let failed = ambiguousCount;
     let invalidRemoved = 0;
     let retryable = false;
     let apnsLatencyTotalMs = 0;
@@ -868,6 +904,27 @@ export class ChannelObject extends DurableObject<Env> {
       .map((row) => row.batch_id);
   }
 
+  private async scheduleDeliveryRecoveryAlarm(): Promise<void> {
+    const recoverAt = this.ctx.storage.sql
+      .exec<{ recover_at: number | null }>(
+        `SELECT MIN(
+          CASE
+            WHEN state = 'pending' THEN updated_at + ?
+            WHEN state = 'processing' THEN updated_at + ?
+            ELSE NULL
+          END
+        ) AS recover_at
+        FROM delivery_batches
+        WHERE state IN ('pending', 'processing')`,
+        DELIVERY_OUTBOX_RETRY_MS,
+        DELIVERY_PROCESSING_LEASE_MS,
+      )
+      .one()?.recover_at;
+    if (recoverAt !== null && recoverAt !== undefined) {
+      await this.ctx.storage.setAlarm(Math.max(Date.now() + 1_000, recoverAt));
+    }
+  }
+
   private installationAuthorized(
     installationID: string,
     capabilityDigest: string,
@@ -907,10 +964,6 @@ export class ChannelObject extends DurableObject<Env> {
   private isUsable(): boolean {
     const state = this.state();
     return state.provisioned_at !== null && state.closed_at === null;
-  }
-
-  private hasSchema(): boolean {
-    return this.prepareExistingSchema();
   }
 
   private prepareExistingSchema(): boolean {
