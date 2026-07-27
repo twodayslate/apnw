@@ -9,14 +9,9 @@ export interface ApnsPayload {
     };
     sound: "default";
   };
-  route?: string;
 }
 
-export function buildPayload(
-  app: AppConfig,
-  event: string,
-  route?: string,
-): ApnsPayload {
+export function buildPayload(app: AppConfig, event: string): ApnsPayload {
   const template = app.templates[event];
   if (!template) {
     throw new HttpError(404, "not_found", "Not found");
@@ -29,7 +24,6 @@ export function buildPayload(
       },
       sound: "default",
     },
-    ...(route ? { route } : {}),
   };
   if (new TextEncoder().encode(JSON.stringify(payload)).byteLength > 4_096) {
     throw new HttpError(400, "invalid_request", "Invalid request");

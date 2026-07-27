@@ -14,7 +14,16 @@ import type { Env } from "../src/types";
 
 const app: AppConfig = {
   bundleID: "com.example.first",
-  routeSchemes: ["first"],
+  appAttest: {
+    extensionPolicy: "if-present",
+    maxFraudRiskMetric: 10,
+    allowedValidationCategories: {
+      development: [3],
+      production: [2, 4],
+    },
+    allowedBundleVersions: ["1"],
+  },
+  provisioning: { shardCount: 256, shardVersion: 1 },
   templates: {
     changed: { title: "Update", body: "Something changed." },
   },
@@ -23,13 +32,12 @@ const app: AppConfig = {
 describe("APNs provider", () => {
   beforeEach(() => clearProviderTokenCache());
 
-  it("builds only allowlisted payloads and routes", () => {
-    expect(buildPayload(app, "changed", "first://item/1")).toEqual({
+  it("builds only fixed allowlisted payloads", () => {
+    expect(buildPayload(app, "changed")).toEqual({
       aps: {
         alert: { title: "Update", body: "Something changed." },
         sound: "default",
       },
-      route: "first://item/1",
     });
     expect(() => buildPayload(app, "unknown")).toThrow("Not found");
   });
@@ -85,40 +93,80 @@ describe("APNs provider", () => {
     expect(requests[0]?.headers.get("apns-topic")).toBe(
       "com.example.first",
     );
-    expect(requests[0]?.headers.get("apns-push-type")).toBe("alert");
   });
 
-  it("uses the production host and categorizes safe APNs errors", async () => {
-    let request: Request | undefined;
-    const result = await sendNotification(
+  it("classifies cleanup without conflating topic errors", async () => {
+    const now = Date.now();
+    const unregistered = await sendNotification(
       await makeEnv("production"),
       { ...app, bundleID: "com.example.second" },
       "00112233",
       buildPayload(app, "changed"),
       "event-2",
-      async (input, init) => {
-        request = new Request(input, init);
-        return Response.json(
-          { reason: "Unregistered", timestamp: Date.now() },
+      async () =>
+        Response.json(
+          { reason: "Unregistered", timestamp: now },
           { status: 410 },
-        );
-      },
+        ),
     );
-    expect(request?.url).toContain("https://api.push.apple.com/");
-    expect(request?.headers.get("apns-topic")).toBe("com.example.second");
-    expect(result).toMatchObject({
+    const wrongTopic = await sendNotification(
+      await makeEnv("production"),
+      app,
+      "00112233",
+      buildPayload(app, "changed"),
+      "event-3",
+      async () =>
+        Response.json(
+          { reason: "DeviceTokenNotForTopic" },
+          { status: 400 },
+        ),
+    );
+    expect(unregistered).toMatchObject({
       accepted: false,
-      invalidToken: true,
-      retryable: false,
+      cleanup: "unregistered",
+      invalidationTimestamp: now,
       reason: "unregistered",
       status: 410,
     });
-    expect(categorizeReason(503, "malicious secret response")).toBe(
+    expect(wrongTopic).toMatchObject({
+      cleanup: "none",
+      configurationFailure: true,
+      reason: "topic_error",
+    });
+    expect(categorizeReason(503, "attacker-controlled")).toBe(
       "service_unavailable",
     );
-    expect(categorizeReason(400, "malicious secret response")).toBe(
+    expect(categorizeReason(400, "attacker-controlled")).toBe(
       "upstream_unknown",
     );
+    expect(categorizeReason(403, "BadEnvironmentKeyIdInToken")).toBe(
+      "environment_mismatch",
+    );
+    expect(categorizeReason(403, "MissingProviderToken")).toBe(
+      "invalid_provider_token",
+    );
+  });
+
+  it("fails closed before a request when key and endpoint environments differ", async () => {
+    const env = await makeEnv("production");
+    env.APNS_KEY_ENVIRONMENT = "development";
+    let called = false;
+    const result = await sendNotification(
+      env,
+      app,
+      "00112233",
+      buildPayload(app, "changed"),
+      "event-4",
+      async () => {
+        called = true;
+        return new Response(null, { status: 200 });
+      },
+    );
+    expect(called).toBe(false);
+    expect(result).toMatchObject({
+      configurationFailure: true,
+      reason: "environment_mismatch",
+    });
   });
 });
 
@@ -127,6 +175,8 @@ async function makeEnv(
 ): Promise<Env> {
   return {
     APNS_ENVIRONMENT: environment,
+    APNS_KEY_ENVIRONMENT: environment,
+    APP_ATTEST_ENVIRONMENT: environment,
     SERVICE_VERSION: "test",
     APNS_KEY_P8: await makeEncodedP8(),
     APNS_KEY_ID: "KEY1234567",

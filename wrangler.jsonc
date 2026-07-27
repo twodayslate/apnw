@@ -6,6 +6,12 @@
   "workers_dev": true,
   "vars": {
     "APNS_ENVIRONMENT": "development",
+    "APNS_KEY_ENVIRONMENT": "development",
+    "APP_ATTEST_ENVIRONMENT": "development",
+    "APNS_CIRCUIT_MIN_ATTEMPTS": "10",
+    "APNS_CIRCUIT_FAILURE_RATE": "0.05",
+    "APNS_CIRCUIT_WINDOW_SECONDS": "300",
+    "APNS_CIRCUIT_OPEN_SECONDS": "300",
     "SERVICE_VERSION": "local",
     "LOG_SAMPLE_RATE": "1"
   },
@@ -14,6 +20,27 @@
       {
         "name": "CHANNELS",
         "class_name": "ChannelObject"
+      },
+      {
+        "name": "PROVISIONING",
+        "class_name": "ProvisioningObject"
+      }
+    ]
+  },
+  "queues": {
+    "producers": [
+      {
+        "binding": "DELIVERY_QUEUE",
+        "queue": "apnw-dev-delivery"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "apnw-dev-delivery",
+        "max_batch_size": 100,
+        "max_batch_timeout": 2,
+        "max_retries": 12,
+        "dead_letter_queue": "apnw-dev-delivery-dlq"
       }
     ]
   },
@@ -27,6 +54,10 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["ChannelObject"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["ProvisioningObject"]
     }
   ],
   "observability": {
@@ -40,17 +71,44 @@
   "env": {
     "production": {
       "name": "apnw-prod",
-      "workers_dev": true,
+      "workers_dev": false,
       "vars": {
         "APNS_ENVIRONMENT": "production",
+        "APNS_KEY_ENVIRONMENT": "production",
+        "APP_ATTEST_ENVIRONMENT": "production",
+        "APNS_CIRCUIT_MIN_ATTEMPTS": "10",
+        "APNS_CIRCUIT_FAILURE_RATE": "0.05",
+        "APNS_CIRCUIT_WINDOW_SECONDS": "300",
+        "APNS_CIRCUIT_OPEN_SECONDS": "300",
         "SERVICE_VERSION": "local",
-        "LOG_SAMPLE_RATE": "1"
+        "LOG_SAMPLE_RATE": "0.1"
       },
       "durable_objects": {
         "bindings": [
           {
             "name": "CHANNELS",
             "class_name": "ChannelObject"
+          },
+          {
+            "name": "PROVISIONING",
+            "class_name": "ProvisioningObject"
+          }
+        ]
+      },
+      "queues": {
+        "producers": [
+          {
+            "binding": "DELIVERY_QUEUE",
+            "queue": "apnw-prod-delivery"
+          }
+        ],
+        "consumers": [
+          {
+            "queue": "apnw-prod-delivery",
+            "max_batch_size": 100,
+            "max_batch_timeout": 2,
+            "max_retries": 12,
+            "dead_letter_queue": "apnw-prod-delivery-dlq"
           }
         ]
       },
