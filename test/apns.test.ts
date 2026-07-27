@@ -56,6 +56,12 @@ describe("APNs provider", () => {
       encodedP8,
       1_700_000_100,
     );
+    const refreshed = await getProviderToken(
+      "TEAM123456",
+      "KEY1234567",
+      encodedP8,
+      1_700_003_000,
+    );
     const [header, claims, signature] = token.split(".");
     expect(JSON.parse(decodeSegment(header ?? ""))).toEqual({
       alg: "ES256",
@@ -67,6 +73,10 @@ describe("APNs provider", () => {
     });
     expect(decodeBase64Url(signature ?? "")).toHaveLength(64);
     expect(cached).toBe(token);
+    expect(refreshed).not.toBe(token);
+    expect(
+      JSON.parse(decodeSegment(refreshed.split(".")[1] ?? "")),
+    ).toMatchObject({ iat: 1_700_003_000 });
   });
 
   it("uses the sandbox host and per-app topic", async () => {
@@ -93,6 +103,59 @@ describe("APNs provider", () => {
     expect(requests[0]?.headers.get("apns-topic")).toBe(
       "com.example.first",
     );
+  });
+
+  it("uses the production host and the selected app's distinct topic", async () => {
+    const requests: Request[] = [];
+    const secondApp = { ...app, bundleID: "com.example.second" };
+    const result = await sendNotification(
+      await makeEnv("production"),
+      secondApp,
+      "00112233",
+      buildPayload(secondApp, "changed"),
+      "event-production",
+      async (input, init) => {
+        requests.push(new Request(input, init));
+        return new Response(null, { status: 200 });
+      },
+    );
+
+    expect(result.accepted).toBe(true);
+    expect(requests[0]?.url).toBe(
+      "https://api.push.apple.com/3/device/00112233",
+    );
+    expect(requests[0]?.headers.get("apns-topic")).toBe(
+      "com.example.second",
+    );
+  });
+
+  it("marks APNs throttling and server failures as retryable", async () => {
+    const throttled = await sendNotification(
+      await makeEnv("development"),
+      app,
+      "00112233",
+      buildPayload(app, "changed"),
+      "event-throttled",
+      async () =>
+        Response.json({ reason: "TooManyRequests" }, { status: 429 }),
+    );
+    const unavailable = await sendNotification(
+      await makeEnv("development"),
+      app,
+      "00112233",
+      buildPayload(app, "changed"),
+      "event-unavailable",
+      async () => new Response(null, { status: 503 }),
+    );
+
+    expect(throttled).toMatchObject({
+      reason: "rate_limited",
+      retryable: true,
+    });
+    expect(unavailable).toMatchObject({
+      reason: "service_unavailable",
+      retryable: true,
+    });
   });
 
   it("classifies cleanup without conflating topic errors", async () => {
