@@ -7,14 +7,14 @@ Field assignments are versioned in `src/observability/analytics.ts`:
 
 | Field | Meaning |
 | --- | --- |
-| `index1` | App ID, or `_service` |
+| `index1` | Checked-in app ID, or `_service` |
 | `blob1` | Deployment |
 | `blob2` | Operation, or `apns_result` for per-category error points |
 | `blob3` | Outcome |
 | `blob4` | HTTP status class |
 | `blob5` | Service version |
 | `blob6` | Cloudflare colo |
-| `blob7` | Event template, or `none` |
+| `blob7` | Checked-in event template, or `none` |
 | `blob8` | Allowlisted APNs reason, or `none` |
 | `blob9` | Idempotency outcome, or `none` |
 | `double1` | Request count (`1`) |
@@ -31,3 +31,9 @@ Field assignments are versioned in `src/observability/analytics.ts`:
 
 Analytics Engine may sample data. Counts therefore multiply values by
 `_sample_interval`. Percentiles operate on the retained samples.
+
+Queued delivery health is monitored with Cloudflare Queue built-in depth, age,
+retry, and DLQ metrics. The request point records durable acceptance; it does
+not pretend that asynchronous APNs results completed inside the HTTP request.
+Direct-delivery aggregate counts remain operator-only and are never returned by
+the public API.

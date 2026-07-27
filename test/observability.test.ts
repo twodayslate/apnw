@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { writeMetric } from "../src/observability/analytics";
+import {
+  writeCompletionLog,
+} from "../src/observability/logger";
 import type { Env, RequestContext } from "../src/types";
 
 describe("aggregate analytics", () => {
@@ -57,5 +60,34 @@ describe("aggregate analytics", () => {
       ),
     ).not.toThrow();
     warn.mockRestore();
+  });
+
+  it("replaces unreviewed dimensions instead of logging their values", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const secret = "secret-value-with spaces";
+    writeCompletionLog(
+      {
+        appID: secret,
+        channelRef: secret,
+        deployment: "development",
+        operation: "publish",
+        requestID: crypto.randomUUID(),
+        serviceVersion: secret,
+        startedAt: Date.now(),
+      },
+      {
+        outcome: secret,
+        httpStatus: 200,
+        event: secret,
+        apnsReason: secret,
+        apnsRequestID: secret,
+      },
+      1,
+    );
+    const serialized = JSON.stringify(log.mock.calls[0]?.[0]);
+    expect(serialized).not.toContain(secret);
+    expect(serialized).toContain("invalid_dimension");
+    expect(serialized).toContain("invalid-version");
+    log.mockRestore();
   });
 });

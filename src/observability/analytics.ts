@@ -26,17 +26,19 @@ export function writeMetric(
 ): void {
   try {
     env.APNW_ANALYTICS?.writeDataPoint({
-      indexes: [context.appID ?? "_service"],
+      indexes: [safeAppID(context.appID)],
       blobs: [
         context.deployment,
         context.operation,
-        metric.outcome,
+        safeDimension(metric.outcome),
         `${Math.floor(metric.httpStatus / 100)}xx`,
-        context.serviceVersion,
-        context.colo ?? "unknown",
-        metric.event ?? "none",
-        metric.apnsReason ?? "none",
-        metric.idempotency ?? "none",
+        safeVersion(context.serviceVersion),
+        context.colo && /^[A-Z0-9]{3}$/.test(context.colo)
+          ? context.colo
+          : "unknown",
+        safeDimension(metric.event ?? "none"),
+        safeDimension(metric.apnsReason ?? "none"),
+        safeDimension(metric.idempotency ?? "none"),
       ],
       doubles: [
         1,
@@ -73,7 +75,7 @@ export function writeApnsReasonMetrics(
     for (const [reason, count] of Object.entries(counts)) {
       if (count <= 0) continue;
       env.APNW_ANALYTICS.writeDataPoint({
-        indexes: [context.appID ?? "_service"],
+        indexes: [safeAppID(context.appID)],
         blobs: [
           context.deployment,
           "apns_result",
@@ -82,7 +84,7 @@ export function writeApnsReasonMetrics(
           context.serviceVersion,
           context.colo ?? "unknown",
           "none",
-          reason,
+          safeDimension(reason),
           "none",
         ],
         doubles: [count, 0, 0, 0, count, 0, 0, 0, 0, 0, 0],
@@ -97,4 +99,21 @@ export function writeApnsReasonMetrics(
       requestID: context.requestID,
     });
   }
+}
+
+function safeDimension(value: string): string {
+  return /^[a-z0-9_]{1,64}$/.test(value)
+    ? value
+    : "invalid_dimension";
+}
+
+function safeVersion(value: string): string {
+  return /^[A-Za-z0-9._-]{1,64}$/.test(value)
+    ? value
+    : "invalid-version";
+}
+
+function safeAppID(value: string | undefined): string {
+  if (value === undefined) return "_service";
+  return /^[a-z0-9_]{1,64}$/.test(value) ? value : "_invalid";
 }
