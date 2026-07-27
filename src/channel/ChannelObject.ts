@@ -4,10 +4,11 @@ import { buildPayload } from "../apns/payload";
 import type { AppConfig } from "../apps";
 import { constantTimeEqual } from "../auth";
 import type { Env } from "../types";
+import { applySchemaMigrations } from "../storage/schema";
 import {
   CHANNEL_SCHEMA,
+  CHANNEL_SCHEMA_MIGRATIONS,
   CHANNEL_SCHEMA_VERSION,
-  MIGRATE_CHANNEL_V1_TO_V2,
 } from "./schema";
 
 const EVENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -114,25 +115,10 @@ export class ChannelObject extends DurableObject<Env> {
   }
 
   private initializeSchema(): void {
-    if (this.schemaReady) return;
+    if (this.prepareExistingSchema()) return;
     const sql = this.ctx.storage.sql;
-    const current = this.hasSchema()
-      ? sql
-          .exec<{ version: number }>(
-            "SELECT version FROM schema_metadata WHERE singleton = 1",
-          )
-          .toArray()[0]?.version
-      : undefined;
-    if (current === 1) sql.exec(MIGRATE_CHANNEL_V1_TO_V2);
     sql.exec(CHANNEL_SCHEMA);
-    const version = sql
-      .exec<{ version: number }>(
-        "SELECT version FROM schema_metadata WHERE singleton = 1",
-      )
-      .one()?.version;
-    if (version !== CHANNEL_SCHEMA_VERSION) {
-      throw new Error("Unsupported channel schema version");
-    }
+    this.assertCurrentSchemaVersion();
     this.schemaReady = true;
   }
 
@@ -316,7 +302,7 @@ export class ChannelObject extends DurableObject<Env> {
   }
 
   markEnqueued(eventID: string, batchIDs: number[]): void {
-    if (!this.hasSchema()) return;
+    if (!this.prepareExistingSchema()) return;
     for (const batchID of batchIDs) {
       this.ctx.storage.sql.exec(
         `UPDATE delivery_batches SET state = 'enqueued', updated_at = ?
@@ -897,7 +883,7 @@ export class ChannelObject extends DurableObject<Env> {
   }
 
   private state(): StateRow {
-    if (!this.hasSchema()) {
+    if (!this.prepareExistingSchema()) {
       return {
         provisioned_at: null,
         admin_capability_digest: null,
@@ -924,15 +910,41 @@ export class ChannelObject extends DurableObject<Env> {
   }
 
   private hasSchema(): boolean {
-    if (this.schemaReady !== undefined) return this.schemaReady;
+    return this.prepareExistingSchema();
+  }
+
+  private prepareExistingSchema(): boolean {
+    if (this.schemaReady === true) return true;
     const row = this.ctx.storage.sql
       .exec<{ count: number }>(
         `SELECT COUNT(*) AS count FROM sqlite_master
-         WHERE type = 'table' AND name = 'channel_state'`,
+         WHERE type = 'table' AND name = 'schema_metadata'`,
       )
       .one();
-    this.schemaReady = (row?.count ?? 0) === 1;
-    return this.schemaReady;
+    if ((row?.count ?? 0) !== 1) {
+      this.schemaReady = false;
+      return false;
+    }
+
+    applySchemaMigrations(
+      this.ctx.storage,
+      CHANNEL_SCHEMA_VERSION,
+      CHANNEL_SCHEMA_MIGRATIONS,
+    );
+    this.assertCurrentSchemaVersion();
+    this.schemaReady = true;
+    return true;
+  }
+
+  private assertCurrentSchemaVersion(): void {
+    const version = this.ctx.storage.sql
+      .exec<{ version: number }>(
+        "SELECT version FROM schema_metadata WHERE singleton = 1",
+      )
+      .one()?.version;
+    if (version !== CHANNEL_SCHEMA_VERSION) {
+      throw new Error("Unsupported channel schema version");
+    }
   }
 
   private takeRateLimit(

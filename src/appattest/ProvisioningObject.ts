@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { getApp, type AppConfig } from "../apps";
 import { encodeBase64Url } from "../auth";
 import { getProviderToken } from "../apns/jwt";
+import { applySchemaMigrations } from "../storage/schema";
 import type { Env } from "../types";
 import {
   verifyAppAttestReceipt,
@@ -12,6 +13,11 @@ import {
   verifyAssertion,
   verifyAttestation,
 } from "./verifier";
+import {
+  PROVISIONING_SCHEMA,
+  PROVISIONING_SCHEMA_MIGRATIONS,
+  PROVISIONING_SCHEMA_VERSION,
+} from "./schema";
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1_000;
 export const MAX_OUTSTANDING_CHALLENGES_PER_SHARD = 512;
@@ -67,62 +73,40 @@ interface FraudRow extends Record<string, SqlStorageValue> {
 export class ProvisioningObject extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS schema_metadata (
-        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-        version INTEGER NOT NULL
-      );
-      INSERT OR IGNORE INTO schema_metadata(singleton, version)
-        VALUES (1, 2);
-      CREATE TABLE IF NOT EXISTS challenges (
-        challenge_id TEXT PRIMARY KEY,
-        challenge TEXT NOT NULL,
-        purpose TEXT NOT NULL,
-        key_id TEXT NOT NULL,
-        binding_digest TEXT,
-        expires_at INTEGER NOT NULL,
-        used_at INTEGER
-      );
-      CREATE TABLE IF NOT EXISTS app_attest_keys (
-        key_id TEXT PRIMARY KEY,
-        app_id TEXT NOT NULL,
-        public_key_spki TEXT NOT NULL,
-        assertion_counter INTEGER NOT NULL,
-        validation_category INTEGER,
-        bundle_version TEXT,
-        fraud_receipt TEXT NOT NULL,
-        fraud_status TEXT NOT NULL,
-        fraud_assessed_at INTEGER,
-        fraud_attempt_count INTEGER NOT NULL DEFAULT 0,
-        fraud_next_attempt_at INTEGER,
-        fraud_risk_metric INTEGER,
-        created_at INTEGER NOT NULL,
-        last_used_at INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS rate_limits (
-        rate_key TEXT PRIMARY KEY,
-        window_started_at INTEGER NOT NULL,
-        request_count INTEGER NOT NULL
-      );
-    `);
-    const schemaVersion = this.ctx.storage.sql
+    this.initializeSchema();
+  }
+
+  private initializeSchema(): void {
+    const sql = this.ctx.storage.sql;
+    const hasMetadata =
+      sql
+        .exec<{ count: number }>(
+          `SELECT COUNT(*) AS count FROM sqlite_master
+           WHERE type = 'table' AND name = 'schema_metadata'`,
+        )
+        .one()?.count === 1;
+    if (!hasMetadata) {
+      sql.exec(PROVISIONING_SCHEMA);
+      this.assertCurrentSchemaVersion();
+      return;
+    }
+
+    applySchemaMigrations(
+      this.ctx.storage,
+      PROVISIONING_SCHEMA_VERSION,
+      PROVISIONING_SCHEMA_MIGRATIONS,
+    );
+    this.assertCurrentSchemaVersion();
+  }
+
+  private assertCurrentSchemaVersion(): void {
+    const version = this.ctx.storage.sql
       .exec<{ version: number }>(
         "SELECT version FROM schema_metadata WHERE singleton = 1",
       )
-      .toArray()[0]?.version;
-    if (schemaVersion === 1) {
-      this.ctx.storage.sql.exec(
-        "ALTER TABLE app_attest_keys ADD COLUMN fraud_attempt_count INTEGER NOT NULL DEFAULT 0",
-      );
-      this.ctx.storage.sql.exec(
-        "ALTER TABLE app_attest_keys ADD COLUMN fraud_next_attempt_at INTEGER",
-      );
-      this.ctx.storage.sql.exec(
-        "ALTER TABLE app_attest_keys ADD COLUMN fraud_risk_metric INTEGER",
-      );
-      this.ctx.storage.sql.exec(
-        "UPDATE schema_metadata SET version = 2 WHERE singleton = 1",
-      );
+      .one()?.version;
+    if (version !== PROVISIONING_SCHEMA_VERSION) {
+      throw new Error("Unsupported provisioning schema version");
     }
   }
 

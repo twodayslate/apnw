@@ -119,12 +119,31 @@ errors, queue age/depth, retries, and any DLQ message. See
 
 Rollback by deploying the last known-good version. Channel routing is stable
 across code and `LOG_CORRELATION_KEY` rotation. Never roll back to code that
-interprets the v2 schema as v1. Queued batches and Durable Object alarms are
-idempotent and may be delivered again safely after rollback.
+does not support the currently deployed schema version. Queued batches and
+Durable Object alarms are idempotent and may be delivered again safely after
+rollback.
 
 Rotate an APNs or DeviceCheck key by installing the new key in one environment,
 deploying, validating, then revoking the old key. Do not rotate channel
 capabilities as part of server-key maintenance.
+
+## Future schema changes
+
+The checked-in Channel and Provisioning schemas are the initial production
+version (`v1`); there are no pre-release migrations. For a future schema change:
+
+1. Update the complete create schema for new Durable Objects.
+2. Increment that schema's current version by exactly one.
+3. Append a sequential migration from the last deployed version to the new
+   version. Never edit or remove a migration after it has shipped.
+4. Test both fresh creation and migration from every supported deployed version.
+5. Deploy to development first and verify existing objects before production.
+
+Existing Channel objects migrate on first use without allowing an unknown
+capability to initialize storage. Fixed Provisioning shards migrate when their
+Durable Object instance starts. Each schema step and its version update commit
+atomically. A Worker fails closed if it encounters a newer schema or a missing
+migration step.
 
 ## Capacity acceptance
 
