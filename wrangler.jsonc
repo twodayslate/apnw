@@ -72,6 +72,12 @@
     "production": {
       "name": "apnw-prod",
       "workers_dev": false,
+      "routes": [
+        {
+          "pattern": "apnw.gateway-service.app",
+          "custom_domain": true
+        }
+      ],
       "vars": {
         "APNS_ENVIRONMENT": "production",
         "APNS_KEY_ENVIRONMENT": "production",
