@@ -353,7 +353,8 @@ function validateExtensions(
     !app.appAttest.allowedValidationCategories[environment].includes(
       validationCategory,
     ) ||
-    !app.appAttest.allowedBundleVersions.includes(bundleVersion)
+    (app.appAttest.allowedBundleVersions !== "any" &&
+      !app.appAttest.allowedBundleVersions.includes(bundleVersion))
   ) {
     throw new Error("distribution policy");
   }

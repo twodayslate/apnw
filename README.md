@@ -133,7 +133,7 @@ chain_of_custody: {
       development: [3],
       production: [2, 4],
     },
-    allowedBundleVersions: ["1"],
+    allowedBundleVersions: "any",
   },
   provisioning: { shardCount: 256, shardVersion: 1 },
   templates: {
@@ -145,9 +145,11 @@ chain_of_custody: {
 }
 ```
 
-Update `allowedBundleVersions` before a build with a new `CFBundleVersion` must
-provision channels. Move `extensionPolicy` to `required` only after the minimum
-supported OS always emits the Apple distribution extensions.
+Set `allowedBundleVersions` to an explicit list when old or unreviewed builds
+must be prevented from provisioning new channels. The
+`chain_of_custody` configuration uses `"any"`, so every `CFBundleVersion` is
+accepted. Move `extensionPolicy` to `required` only after the minimum supported
+OS always emits the Apple distribution extensions.
 
 Event templates must remain generic. APNW has no client-supplied title, body,
 route, deep link, identifier, image, action, or APNs-header field.

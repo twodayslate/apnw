@@ -155,6 +155,37 @@ describe("App Attest verifier", () => {
       bundleVersion: "1",
     });
 
+    const anyBundleVersion = await makeAssertion(
+      pair.privateKey,
+      2,
+      clientDataHash,
+      new Map<string, unknown>([
+        ["apple_validation_category_01", new Uint8Array([3, 0, 0, 0])],
+        ["apple_bundle_version_01", "unrestricted-build"],
+      ]),
+    );
+    await expect(
+      verifyAssertion({
+        app: {
+          ...app,
+          appAttest: {
+            ...app.appAttest,
+            allowedBundleVersions: "any",
+          },
+        },
+        appAttestEnvironment: "development",
+        assertion: anyBundleVersion,
+        clientDataHash,
+        previousCounter: 1,
+        publicKeySpki,
+        teamID,
+      }),
+    ).resolves.toMatchObject({
+      counter: 2,
+      validationCategory: 3,
+      bundleVersion: "unrestricted-build",
+    });
+
     const rejected = await makeAssertion(
       pair.privateKey,
       2,
