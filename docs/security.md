@@ -13,14 +13,16 @@
   claim sender exclusion, or close the channel.
 - Durable Object routing depends only on a versioned public hash construction,
   so rotating telemetry or Apple secrets does not orphan channels.
-- Idempotency claims include the event, exclusion, and exact client timestamp
-  and remain for seven days without count-based eviction.
+- Idempotency claims include the event, canonical application data, exclusion,
+  and exact client timestamp and remain for seven days without count-based
+  eviction.
 - Completed idempotency and delivery records are pruned by Durable Object alarms
   even when a channel receives no later publish.
 - A stale APNs response can mutate only the snapshotted installation, token, and
   token version.
-- Notification content is selected from source control and contains no
-  user-authored content or application identifiers.
+- Publishers cannot replace the server-controlled fallback alert or reserved
+  APNs fields. App-defined data is isolated under a versioned envelope, bounded
+  by APNs' payload limit, and included in the idempotency claim.
 
 ## Threat model
 
@@ -37,6 +39,14 @@ authorization for collaboration membership. A genuine but malicious app
 instance can still misuse capabilities it legitimately receives. The app must
 enforce membership in its authoritative CloudKit model and distribute
 capabilities only through end-to-end encrypted records.
+
+Possession of a shared channel capability permits publishing arbitrary JSON
+data to that channel. Recipients must treat the envelope as untrusted input,
+validate event-specific schemas, and re-check authorization against
+authoritative app state before presenting or acting on it. Sensitive values
+should be represented by opaque local identifiers or application-level
+ciphertext; ordinary APNs payload transport is not application-level
+end-to-end encryption.
 
 Jailbroken devices and single compromised devices acting as assertion relays
 remain residual risks. APNW exchanges the untrusted attestation receipt with

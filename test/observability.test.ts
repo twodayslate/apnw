@@ -36,8 +36,10 @@ describe("aggregate analytics", () => {
     const point = writeDataPoint.mock.calls[0]?.[0];
     const serialized = JSON.stringify(point);
     expect(point.indexes).toEqual(["chain_of_custody"]);
+    expect(point.blobs?.[6]).toBe("application_event");
     expect(serialized).not.toContain(context.requestID);
     expect(serialized).not.toContain(context.channelRef);
+    expect(serialized).not.toContain("submission_ready");
   });
 
   it("does not let an analytics failure affect the caller", () => {

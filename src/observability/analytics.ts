@@ -6,7 +6,7 @@ import type { Metric } from "./schema";
  *
  * index1: app ID, or "_service" for app-independent requests
  * blob1..9: deployment, operation, outcome, HTTP status class,
- *   service version, colo, event template, allowlisted APNs reason, idempotency
+ *   service version, colo, event presence, allowlisted APNs reason, idempotency
  * double1..11: request count, duration ms, target, accepted, failed, invalid
  *   token removals, total APNs latency, max APNs latency, registration delta,
  *   token replacements, HTTP status
@@ -34,7 +34,7 @@ export function writeMetric(
         `${Math.floor(metric.httpStatus / 100)}xx`,
         safeVersion(context.serviceVersion),
         safeColo(context.colo),
-        safeDimension(metric.event ?? "none"),
+        metric.event === undefined ? "none" : "application_event",
         safeDimension(metric.apnsReason ?? "none"),
         safeDimension(metric.idempotency ?? "none"),
       ],

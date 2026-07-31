@@ -1,4 +1,4 @@
-export interface NotificationTemplate {
+export interface NotificationFallback {
   readonly title: string;
   readonly body: string;
 }
@@ -17,7 +17,7 @@ export interface AppConfig {
     readonly shardCount: number;
     readonly shardVersion: number;
   };
-  readonly templates: Readonly<Record<string, NotificationTemplate>>;
+  readonly notificationFallback: NotificationFallback;
 }
 
 export const apps = {
@@ -37,31 +37,9 @@ export const apps = {
       shardCount: 256,
       shardVersion: 1,
     },
-    templates: {
-      check_requested: {
-        title: "CoC update",
-        body: "A new response is requested.",
-      },
-      assignment_available: {
-        title: "CoC update",
-        body: "A new assignment is available.",
-      },
-      submission_ready: {
-        title: "CoC update",
-        body: "A response is ready for review.",
-      },
-      decision_available: {
-        title: "CoC update",
-        body: "A response decision is available.",
-      },
-      release_requested: {
-        title: "CoC update",
-        body: "A release request is ready for review.",
-      },
-      pause_requested: {
-        title: "CoC update",
-        body: "A pause request is ready for review.",
-      },
+    notificationFallback: {
+      title: "Chain of Custody",
+      body: "You have a new update.",
     },
   },
 } as const satisfies Readonly<Record<string, AppConfig>>;

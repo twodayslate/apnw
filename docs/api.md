@@ -177,14 +177,50 @@ X-Installation-Authorization: Bearer <required only for exclusion>
 Content-Type: application/json
 
 {
-  "event":"submission_ready",
+  "event":"check.response",
+  "data":{
+    "event_id":"7E6A9D8C-...",
+    "revision":3
+  },
   "excludeInstallationID":"<optional base64url>"
 }
 ```
 
+`event` is an application-defined lowercase identifier of at most 64
+characters. `data` is an optional JSON object and defaults to `{}`. APNW wraps
+the values without interpreting their schema:
+
+```json
+{
+  "aps": {
+    "alert": {
+      "title": "<app fallback title>",
+      "body": "<app fallback body>"
+    },
+    "sound": "default",
+    "mutable-content": 1
+  },
+  "apnw": {
+    "version": 1,
+    "event": "check.response",
+    "data": {
+      "event_id": "7E6A9D8C-...",
+      "revision": 3
+    }
+  }
+}
+```
+
+The complete APNs payload may not exceed 4,096 bytes. APNW owns `aps`; clients
+cannot submit APNs headers, alert copy, actions, or other reserved fields.
+Apps should send opaque identifiers or encrypted values rather than sensitive
+plaintext. A Notification Service Extension can use the envelope to construct
+the final notification locally.
+
 The timestamp must be no more than five minutes in the future or 72 hours in
-the past. The same idempotency key, exact timestamp, event, and exclusion must
-be reused for retries; any mismatch returns `409`.
+the past. The same idempotency key, exact timestamp, event, canonical data, and
+exclusion must be reused for retries; any mismatch returns `409`. JSON object
+key order does not affect the canonical data digest.
 
 Small snapshots deliver directly. Larger snapshots are partitioned into
 100-target batches and accepted into the Durable Object outbox and Cloudflare
@@ -217,5 +253,6 @@ permanent tombstone. The old channel capability can never be reprovisioned.
 
 `GET /health` returns only status, deployment environment, and service version.
 
-There are no list, history, statistics, arbitrary payload, route, deep-link,
-dashboard, or token-introspection endpoints.
+There are no list, history, statistics, route, deep-link, dashboard, or
+token-introspection endpoints. Application data is accepted only as part of an
+authenticated publish and is not exposed through a read API.

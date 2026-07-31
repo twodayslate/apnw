@@ -156,7 +156,7 @@ migration step.
 Prepare a secret, ignored JSON fixture containing at least 5,000 already
 App-Attest-provisioned test channels. Each entry contains `appID`,
 `channelCapability`, `installationCapability`, `installationID`, a unique
-hexadecimal `deviceToken`, and an allowlisted `event`. Use a dedicated
+hexadecimal `deviceToken`, and a valid application event. Use a dedicated
 nonproduction deployment:
 
 ```bash

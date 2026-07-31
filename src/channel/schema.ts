@@ -1,10 +1,17 @@
 import type { SchemaMigration } from "../storage/schema";
 
-// This is the first deployable schema. When a future version ships, increment
-// this value and append its sequential migration to CHANNEL_SCHEMA_MIGRATIONS.
-export const CHANNEL_SCHEMA_VERSION = 1;
+// Increment this value for each shipped schema and append the sequential
+// migration to CHANNEL_SCHEMA_MIGRATIONS.
+export const CHANNEL_SCHEMA_VERSION = 2;
 
-export const CHANNEL_SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [];
+export const CHANNEL_SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
+  {
+    fromVersion: 1,
+    toVersion: 2,
+    statements:
+      "ALTER TABLE events ADD COLUMN event_data TEXT NOT NULL DEFAULT '{}';",
+  },
+];
 
 export const CHANNEL_SCHEMA = `
   CREATE TABLE IF NOT EXISTS schema_metadata (
@@ -32,6 +39,7 @@ export const CHANNEL_SCHEMA = `
     app_id TEXT NOT NULL,
     request_fingerprint TEXT NOT NULL,
     event_name TEXT NOT NULL,
+    event_data TEXT NOT NULL,
     client_created_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
     completed_at INTEGER,

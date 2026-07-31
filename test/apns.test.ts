@@ -23,22 +23,42 @@ const app: AppConfig = {
     },
   },
   provisioning: { shardCount: 256, shardVersion: 1 },
-  templates: {
-    changed: { title: "Update", body: "Something changed." },
+  notificationFallback: {
+    title: "Update",
+    body: "Something changed.",
   },
 };
 
 describe("APNs provider", () => {
   beforeEach(() => clearProviderTokenCache());
 
-  it("builds only fixed allowlisted payloads", () => {
-    expect(buildPayload(app, "changed")).toEqual({
+  it("builds a generic fallback plus versioned application data", () => {
+    expect(
+      buildPayload(app, "check.response", {
+        event_id: "event-123",
+        media: { kind: "image" },
+      }),
+    ).toEqual({
       aps: {
         alert: { title: "Update", body: "Something changed." },
         sound: "default",
+        "mutable-content": 1,
+      },
+      apnw: {
+        version: 1,
+        event: "check.response",
+        data: {
+          event_id: "event-123",
+          media: { kind: "image" },
+        },
       },
     });
-    expect(() => buildPayload(app, "unknown")).toThrow("Not found");
+  });
+
+  it("rejects application data that would exceed the APNs payload limit", () => {
+    expect(() =>
+      buildPayload(app, "check.response", { value: "x".repeat(4_096) }),
+    ).toThrow("Notification payload too large");
   });
 
   it("creates a valid ES256 token and reuses it within the cache window", async () => {
@@ -91,7 +111,7 @@ describe("APNs provider", () => {
       await makeEnv("development"),
       app,
       "aabbccdd",
-      buildPayload(app, "changed"),
+      buildPayload(app, "changed", {}),
       "event-1",
       fetcher,
     );
@@ -111,7 +131,7 @@ describe("APNs provider", () => {
       await makeEnv("production"),
       secondApp,
       "00112233",
-      buildPayload(secondApp, "changed"),
+      buildPayload(secondApp, "changed", {}),
       "event-production",
       async (input, init) => {
         requests.push(new Request(input, init));
@@ -133,7 +153,7 @@ describe("APNs provider", () => {
       await makeEnv("development"),
       app,
       "00112233",
-      buildPayload(app, "changed"),
+      buildPayload(app, "changed", {}),
       "event-throttled",
       async () =>
         Response.json({ reason: "TooManyRequests" }, { status: 429 }),
@@ -142,7 +162,7 @@ describe("APNs provider", () => {
       await makeEnv("development"),
       app,
       "00112233",
-      buildPayload(app, "changed"),
+      buildPayload(app, "changed", {}),
       "event-unavailable",
       async () => new Response(null, { status: 503 }),
     );
@@ -163,7 +183,7 @@ describe("APNs provider", () => {
       await makeEnv("development"),
       app,
       "00112233",
-      buildPayload(app, "changed"),
+      buildPayload(app, "changed", {}),
       "event-expired-token",
       async () => {
         requestCount += 1;
@@ -188,7 +208,7 @@ describe("APNs provider", () => {
       await makeEnv("production"),
       app,
       "00112233",
-      buildPayload(app, "changed"),
+      buildPayload(app, "changed", {}),
       "event-provider-failure",
       async () =>
         Response.json(
@@ -211,7 +231,7 @@ describe("APNs provider", () => {
       await makeEnv("production"),
       { ...app, bundleID: "com.example.second" },
       "00112233",
-      buildPayload(app, "changed"),
+      buildPayload(app, "changed", {}),
       "event-2",
       async () =>
         Response.json(
@@ -223,7 +243,7 @@ describe("APNs provider", () => {
       await makeEnv("production"),
       app,
       "00112233",
-      buildPayload(app, "changed"),
+      buildPayload(app, "changed", {}),
       "event-3",
       async () =>
         Response.json(
@@ -265,7 +285,7 @@ describe("APNs provider", () => {
       env,
       app,
       "00112233",
-      buildPayload(app, "changed"),
+      buildPayload(app, "changed", {}),
       "event-4",
       async () => {
         called = true;

@@ -8,7 +8,8 @@ implemented with Cloudflare Workers and SQLite-backed Durable Objects.
 - Support multiple iOS apps from one Worker codebase.
 - Send visible APNs notifications without adding a third-party SDK to an app.
 - Keep deployment and ongoing operations small enough for one developer.
-- Keep notification payloads generic and controlled by the server.
+- Keep the visible fallback alert controlled by the server while transporting
+  bounded, versioned application data.
 - Store only the device and delivery metadata required to operate the service.
 - Isolate apps, APNs environments, and notification channels from one another.
 - Allow only App Attest-verified instances of a registered app to provision new
@@ -25,7 +26,8 @@ implemented with Cloudflare Workers and SQLite-backed Durable Objects.
 - A public or end-user-facing analytics API or dashboard.
 - Email, SMS, Android, or web push.
 - A public topic directory, message-history API, or end-user dashboard.
-- Arbitrary client-provided notification titles, bodies, deep links, or routes.
+- Client-provided `aps` fields, notification titles, bodies, APNs headers, or
+  action definitions.
 - Rich-media attachments or notification action buttons.
 - Treating possession of a channel capability as proof of a real-world identity.
 - Unbounded single-event broadcasts. Large fan-out must use queued, chunked
@@ -186,31 +188,9 @@ export const apps = {
       shardVersion: 1,
       shardCount: 256
     },
-    templates: {
-      check_requested: {
-        title: "CoC update",
-        body: "A new response is requested."
-      },
-      assignment_available: {
-        title: "CoC update",
-        body: "A new assignment is available."
-      },
-      submission_ready: {
-        title: "CoC update",
-        body: "A response is ready for review."
-      },
-      decision_available: {
-        title: "CoC update",
-        body: "A response decision is available."
-      },
-      release_requested: {
-        title: "CoC update",
-        body: "A release request is ready for review."
-      },
-      pause_requested: {
-        title: "CoC update",
-        body: "A pause request is ready for review."
-      }
+    notificationFallback: {
+      title: "Chain of Custody",
+      body: "You have a new update."
     }
   }
 } as const;
@@ -219,12 +199,12 @@ export const apps = {
 Adding an app should require:
 
 1. Enabling Push Notifications for its App ID.
-2. Adding its bundle ID and allowed templates to the registry.
-3. Adding app-specific request and payload tests.
+2. Adding its bundle ID and generic fallback alert to the registry.
+3. Adding app-specific topic and App Attest tests.
 4. Deploying the existing Worker code.
 
-Unknown app IDs and event names return `404` so the API does not reveal which
-part of a request was valid.
+Unknown app IDs return `404`. Event names are application-defined identifiers
+validated by a common syntax, so new event types do not require a Worker change.
 
 ## Cloudflare secrets
 
@@ -430,16 +410,24 @@ X-Installation-Authorization: Bearer <installation-capability>
 Content-Type: application/json
 
 {
-  "event": "submission_ready",
+  "event": "check.response",
+  "data": {
+    "event_id": "7E6A9D8C-...",
+    "revision": 3
+  },
   "excludeInstallationID": "<sender-installation-id>"
 }
 ```
 
-- The Worker maps `event` to a checked-in title and body.
-- Clients cannot submit notification copy, APNs headers, images, actions, routes,
-  deep links, or application-domain identifiers.
-- APNW notifications always open the app's generic activity screen. The app then
-  fetches authoritative CloudKit state.
+- The Worker supplies a checked-in generic fallback title and body.
+- The Worker places the application-defined event and optional JSON object under
+  `apnw: { version: 1, event, data }` and sets `mutable-content`.
+- Clients cannot submit or replace `aps`, notification copy, APNs headers,
+  actions, or other reserved fields.
+- A Notification Service Extension may resolve opaque identifiers against local
+  or CloudKit state and construct the final preview on-device.
+- The complete APNs payload must fit within 4,096 bytes. Application data is
+  bounded for depth and element count before persistence.
 - Exclude an installation only after verifying its per-installation capability.
   If exclusion is omitted, the installation header is optional. Other devices
   owned by the sender may still receive the update.
@@ -509,6 +497,7 @@ CREATE TABLE events (
   idempotency_key TEXT PRIMARY KEY,
   request_digest TEXT NOT NULL,
   event_name TEXT NOT NULL,
+  event_data TEXT NOT NULL,
   client_created_at INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
   delivery_mode TEXT NOT NULL,
@@ -546,15 +535,16 @@ CREATE TABLE channel_state (
 Do not store or retain:
 
 - Notification title or body.
-- CloudKit record identifiers.
 - Pairing identifiers, labels, roles, or participant identities.
 - APNs request payloads.
 - Raw shared-channel, administrator, or installation capabilities.
 - App Attest assertions, attestation objects, challenges, key IDs, or receipts
   inside Channel Durable Objects.
 
-APNW accepts no route, deep link, record identifier, or notification payload
-metadata, so direct and queued delivery persist none of those values.
+APNW stores canonical application data with the event only for delivery and
+seven-day idempotency retention. Clients should use opaque identifiers or
+application-level ciphertext for sensitive values. APNW exposes no history or
+read API for the stored envelope.
 
 Retain terminal idempotency and per-installation delivery metadata for seven days
 after acceptance. Never prune an unexpired idempotency record because of a row
@@ -702,10 +692,11 @@ validation rejection, App Attest key registration, channel provisioning, rate
 limiting, and unhandled exceptions must also produce structured events.
 
 Every telemetry dimension comes from a server-owned allowlist. Log a canonical
-registry `appID` only after successful lookup. For an unknown or malformed app,
-event, operation, APNs reason, or other enum, emit a fixed sentinel such as
-`unknown_app` or `validation_rejected`; never copy the attacker-supplied string
-into logs or analytics.
+registry `appID` only after successful lookup. Never log or aggregate the
+application-defined event name; emit the fixed `application_event` sentinel
+when an event is present. For an unknown or malformed app, operation, APNs
+reason, or other enum, emit a fixed sentinel such as `unknown_app` or
+`validation_rejected`; never copy attacker-supplied strings into telemetry.
 
 Logs must never contain:
 
@@ -714,7 +705,7 @@ Logs must never contain:
 - APNs device tokens or installation IDs.
 - Notification routes, request bodies, or APNs payloads.
 - CloudKit, pairing, record, participant, or user identifiers.
-- Notification titles or bodies, even though templates are generic.
+- Notification titles or bodies, even though the fallback is generic.
 - App Attest key IDs, public keys, assertions, attestation objects, receipts, or
   challenge values.
 - Source IP addresses added by APNW application code.
@@ -733,7 +724,7 @@ Write Analytics Engine data points for:
 - Registrations, token replacements, unregistrations, and channel closures.
 - App Attest verification and channel-provisioning outcomes using bounded enums.
 - Authentication, validation, rate-limit, and internal-error counts.
-- Publish event count by app and event-template name.
+- Publish event count by app using a fixed event-presence sentinel.
 - Target, accepted, failed, and stale-token-removal counts.
 - APNs latency and error counts grouped by allowlisted reason category.
 - Idempotency duplicate and retry counts.
@@ -801,8 +792,9 @@ manually reviewed alerts until traffic establishes stable baselines.
   them or they expire.
 
 The Channel Durable Object computes a versioned SHA-256 digest over canonical
-request data: app ID, event-template name, verified excluded installation or
-`null`, idempotency key, and client event time. In one SQLite transaction it:
+request data: app ID, event name, canonical JSON data, verified excluded
+installation or `null`, idempotency key, and client event time. In one SQLite
+transaction it:
 
 1. Inserts the event in `preparing` state if the key is new.
 2. Rejects a stored key whose request digest differs.
@@ -838,7 +830,8 @@ collapse identifier as additional duplicate mitigation.
 - Do not implement a public topic list, registry, statistics API, WebSocket, or
   message-history endpoint.
 - Do not embed a global publishing secret in any client app.
-- Never accept arbitrary notification copy from a client.
+- Never accept client control of fallback notification copy or the reserved
+  `aps` dictionary.
 - Keep capabilities in authorization headers, not URL paths or query strings.
 - Parse authorization headers strictly: exactly one supported scheme and one
   canonical credential, with no comma-joined values, control characters, or
@@ -873,15 +866,15 @@ The Worker cannot independently read or validate membership in a private/shared
 CloudKit database. App Attest proves that channel provisioning was requested by
 a verified instance of the registered app; it does not prove a real-world
 identity, CloudKit membership, or honest user intent. Once a channel is
-provisioned, possession of its high-entropy shared capability authorizes fixed
-event publishing and first-time registrations, but not installation mutation or
-channel administration.
+provisioned, possession of its high-entropy shared capability authorizes
+application-event publishing and first-time registrations, but not installation
+mutation or channel administration.
 
-This is appropriate for a cooperative application using generic payloads, but a
+This is appropriate for a cooperative application using bounded payloads, but a
 participant holding the shared capability can still:
 
 - Register an additional device under a new installation ID and secret.
-- Request allowed notification event types.
+- Publish arbitrary event names and JSON data within the payload limits.
 - Generate nuisance traffic up to the per-capability abuse controls.
 
 They cannot update or delete another installation without its installation
@@ -914,9 +907,10 @@ The server remains generic; these changes occur in the Chain of Custody app:
    with the same accessibility class. Do not store bearer values in
    `UserDefaults`, plaintext App Group files, analytics, crash reports, or
    notification payloads.
-7. Let the App Group outbox contain only a local opaque Keychain reference,
-   canonical event UUID, client creation time, and fixed event enum. Resolve
-   capabilities from Keychain immediately before transport.
+7. Let the App Group outbox contain a local opaque Keychain reference,
+   canonical event UUID, client creation time, application event name, and
+   canonical JSON data. Resolve capabilities from Keychain immediately before
+   transport.
 8. Add a schema-compatible migration for existing pairings without capabilities.
    Only the pairing creator generates and privately retains the administrator
    capability; provisioning an existing migrated shared capability is
@@ -939,15 +933,17 @@ The server remains generic; these changes occur in the Chain of Custody app:
 15. On iCloud account change or sign-out, stop transport, discard unresolved
     outbox entries, unregister where possible, and remove Keychain capability
     mappings before adopting the new account's pairings.
-16. After a CloudKit mutation succeeds, add the corresponding fixed APNW event,
-    UUIDv4 idempotency key, and creation time to the persistent local outbox.
+16. After a CloudKit mutation succeeds, add the corresponding APNW event,
+    canonical data, UUIDv4 idempotency key, and creation time to the persistent
+    local outbox.
 17. Let both the main app and Messages extension enqueue events through the App
     Group. App Attest provisioning remains main-app-only; transport may use the
     shared Keychain access group after provisioning.
-18. Include no user-authored content, routes, deep links, record identifiers, or
+18. Prefer opaque identifiers or encrypted values over user-authored content or
     decrypted CloudKit data in APNW requests.
-19. On notification tap, open the generic activity screen and fetch current
-    CloudKit state before presenting anything.
+19. In a Notification Service Extension, treat event data as untrusted, resolve
+    authorized state locally, honor privacy settings, and fall back to the
+    generic alert when resolution does not complete.
 20. Keep the existing CKSyncEngine notification path as a synchronization
     fallback and deduplicate local/remote alerts.
 
@@ -1005,7 +1001,8 @@ apnw/
 - Create the TypeScript Worker project and local test harness.
 - Add typed environment bindings and the multi-app registry.
 - Implement ES256 APNs JWT generation and bounded caching.
-- Implement payload templates and APNs request construction.
+- Implement the generic fallback alert, versioned application envelope, and
+  APNs request construction.
 - Add the structured logger and Analytics Engine binding.
 - Define versioned telemetry schemas and make analytics writes best-effort.
 - Mock APNs in tests; do not require a real Apple key for the test suite.
@@ -1104,9 +1101,9 @@ Exit criteria:
 - Add device-token capture and App Group persistence.
 - Add device registration reconciliation.
 - Add the persistent notification outbox.
-- Map domain changes to APNW's fixed event types.
-- Add generic activity-screen notification handling and notification
-  deduplication.
+- Map domain changes to APNW application event names and opaque data.
+- Add Notification Service Extension envelope handling, generic fallback
+  behavior, and notification deduplication.
 
 Exit criteria:
 
@@ -1191,8 +1188,9 @@ Exit criteria:
 - APNs JWT claims, encoding, signing, cache reuse, and expiration.
 - Sandbox and production endpoint selection.
 - `apns-topic` selection for every app.
-- Payload template allowlisting and confirmation that routes, deep links, record
-  identifiers, and unknown JSON fields are rejected.
+- Application event/data pass-through, canonical JSON idempotency, APNs payload
+  size enforcement, and confirmation that client-supplied reserved fields are
+  rejected.
 - Registration, token replacement, unregistration, and sender exclusion.
 - Race-safe `410 Unregistered` cleanup using APNs timestamp and token version.
 - `BadDeviceToken`/`DeviceTokenNotForTopic` quarantine, repeated-confirmation
@@ -1250,8 +1248,10 @@ The v1 implementation resolved the original open decisions as follows:
    after 72 hours. Accepted and permanent targets are not retried; explicit
    transient targets are. An interrupted in-flight target becomes ambiguous and
    is not resent, favoring duplicate prevention in that narrow crash window.
-3. V1 accepts no client route or deep link. Every notification opens a generic
-   activity screen, which reloads authoritative CloudKit state.
+3. The API accepts a bounded application event and JSON object inside a
+   versioned `apnw` envelope, but no client-controlled `aps`, route, or deep
+   link. Apps may resolve opaque identifiers locally and replace the generic
+   fallback in a Notification Service Extension.
 4. V1 sends expected private-channel fan-out directly on Workers Paid and has no
    40-device cap. Publishes above the measured safe direct-delivery budget are
    accepted into a transactional outbox and drained by an autoscaling Queue
@@ -1296,7 +1296,7 @@ requires preserving the applicable license and attribution.
   Cloudflare Worker, Durable Object, dashboard, and iOS topic client. Reuse its
   useful APNs and Durable Object ideas, but do not carry forward its global
   client token, unauthenticated administrative routes, public message history,
-  or unrestricted client-provided notification content.
+  or unrestricted client control of APNs alert and header fields.
 - [Pushy design article](https://codakuma.com/pushy/) — a deliberately small
   Worker-based APNs provider demonstrating device-token registration, direct
   APNs delivery, environment separation, and invalid-token cleanup.

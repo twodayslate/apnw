@@ -1,4 +1,5 @@
 import type { AppConfig } from "../apps";
+import type { JsonObject } from "../event";
 import { HttpError } from "../validation";
 
 export interface ApnsPayload {
@@ -8,25 +9,41 @@ export interface ApnsPayload {
       body: string;
     };
     sound: "default";
+    "mutable-content": 1;
+  };
+  apnw: {
+    version: 1;
+    event: string;
+    data: JsonObject;
   };
 }
 
-export function buildPayload(app: AppConfig, event: string): ApnsPayload {
-  const template = app.templates[event];
-  if (!template) {
-    throw new HttpError(404, "not_found", "Not found");
-  }
+export function buildPayload(
+  app: AppConfig,
+  event: string,
+  data: JsonObject,
+): ApnsPayload {
   const payload: ApnsPayload = {
     aps: {
       alert: {
-        title: template.title,
-        body: template.body,
+        title: app.notificationFallback.title,
+        body: app.notificationFallback.body,
       },
       sound: "default",
+      "mutable-content": 1,
+    },
+    apnw: {
+      version: 1,
+      event,
+      data,
     },
   };
   if (new TextEncoder().encode(JSON.stringify(payload)).byteLength > 4_096) {
-    throw new HttpError(400, "invalid_request", "Invalid request");
+    throw new HttpError(
+      413,
+      "payload_too_large",
+      "Notification payload too large",
+    );
   }
   return payload;
 }

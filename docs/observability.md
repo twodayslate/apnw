@@ -10,6 +10,8 @@ analytics, and there is no public analytics API.
 Custom logs may contain:
 
 - registered app ID and bounded operation/outcome enums;
+- the fixed `application_event` sentinel, never the publisher-supplied event
+  name or data;
 - random request ID and service version;
 - aggregate delivery counts for operator-only direct-delivery diagnostics;
 - allowlisted APNs category/status/request UUID;

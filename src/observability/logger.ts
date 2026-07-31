@@ -64,7 +64,8 @@ export function writeCompletionLog(
 
 function reviewDetails(details: LogDetails): LogDetails {
   const safeReason = details.apnsReason?.match(/^[a-z0-9_]{1,40}$/)?.[0];
-  const safeEvent = details.event?.match(/^[a-z0-9_]{1,64}$/)?.[0];
+  const safeEvent =
+    details.event === undefined ? undefined : "application_event";
   const safeRequestID = details.apnsRequestID?.match(
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
   )?.[0];

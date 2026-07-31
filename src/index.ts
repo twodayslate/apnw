@@ -25,6 +25,7 @@ import {
   writeApnsReasonMetrics,
   writeMetric,
 } from "./observability/analytics";
+import { requireEventData, requireEventName } from "./event";
 import {
   parseSampleRate,
   writeCompletionLog,
@@ -423,11 +424,11 @@ async function route(
     const clientCreatedAt = requireEventCreatedAt(request);
     const body = await readJsonObject(request, [
       "event",
+      "data",
       "excludeInstallationID",
     ]);
-    if (typeof body.event !== "string") {
-      throw new HttpError(400, "invalid_request", "Invalid request");
-    }
+    const event = requireEventName(body.event);
+    const { data, dataJSON } = requireEventData(body.data);
     const excludeInstallationID =
       body.excludeInstallationID === undefined
         ? undefined
@@ -439,9 +440,10 @@ async function route(
           readInstallationCapability(request),
         )
       : undefined;
-    buildPayload(app, body.event);
+    buildPayload(app, event, data);
     const fingerprint = await requestFingerprint(
-      body.event,
+      event,
+      dataJSON,
       clientCreatedAt,
       excludeInstallationID,
     );
@@ -449,7 +451,8 @@ async function route(
       app,
       appID,
       clientCreatedAt,
-      event: body.event,
+      dataJSON,
+      event,
       ...(excludeInstallationID ? { excludeInstallationID } : {}),
       ...(excludeInstallationCapabilityDigest
         ? { excludeInstallationCapabilityDigest }
@@ -510,7 +513,7 @@ async function route(
       {
         outcome: "accepted",
         httpStatus: responseStatus,
-        event: body.event,
+        event,
         idempotency: result.idempotency,
         targetCount: result.idempotency === "new" ? result.targetCount : 0,
         ...(deliveryDetails
@@ -832,13 +835,19 @@ async function provisioningBindingDigest(
 
 async function requestFingerprint(
   event: string,
+  dataJSON: string,
   clientCreatedAt: number,
   excludeInstallationID?: string,
 ): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
     new TextEncoder().encode(
-      JSON.stringify([event, clientCreatedAt, excludeInstallationID ?? null]),
+      JSON.stringify([
+        event,
+        dataJSON,
+        clientCreatedAt,
+        excludeInstallationID ?? null,
+      ]),
     ),
   );
   return toHex(new Uint8Array(digest));

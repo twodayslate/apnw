@@ -14,7 +14,7 @@ Field assignments are versioned in `src/observability/analytics.ts`:
 | `blob4` | HTTP status class |
 | `blob5` | Service version |
 | `blob6` | Cloudflare colo |
-| `blob7` | Checked-in event template, or `none` |
+| `blob7` | `application_event` when present, or `none` |
 | `blob8` | Allowlisted APNs reason, or `none` |
 | `blob9` | Idempotency outcome, or `none` |
 | `double1` | Request count (`1`) |

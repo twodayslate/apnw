@@ -33,8 +33,9 @@ const app: AppConfig = {
     },
   },
   provisioning: { shardCount: 256, shardVersion: 1 },
-  templates: {
-    changed: { title: "Update", body: "Activity is available." },
+  notificationFallback: {
+    title: "Update",
+    body: "Activity is available.",
   },
 };
 const teamID = "TESTTEAM12";

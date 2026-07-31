@@ -6,7 +6,7 @@ import {
 } from "../src/storage/schema";
 
 describe("Durable Object schemas", () => {
-  it("creates both first-release schemas at version 1", async () => {
+  it("creates the current schemas", async () => {
     const channel = env.CHANNELS.get(
       env.CHANNELS.idFromName(`schema:${crypto.randomUUID()}`),
     );
@@ -34,7 +34,7 @@ describe("Durable Object schemas", () => {
           .one().version,
     );
 
-    expect(channelVersion).toBe(1);
+    expect(channelVersion).toBe(2);
     expect(provisioningVersion).toBe(1);
   });
 
@@ -67,10 +67,10 @@ describe("Durable Object schemas", () => {
     await channel.provision("c".repeat(64));
 
     const result = await runInDurableObject(channel, (_instance, state) => {
-      applySchemaMigrations(state.storage, 2, [
+      applySchemaMigrations(state.storage, 3, [
         {
-          fromVersion: 1,
-          toVersion: 2,
+          fromVersion: 2,
+          toVersion: 3,
           statements:
             "CREATE TABLE migration_probe(value TEXT NOT NULL); INSERT INTO migration_probe(value) VALUES ('applied');",
         },
@@ -87,7 +87,7 @@ describe("Durable Object schemas", () => {
       };
     });
 
-    expect(result).toEqual({ probe: "applied", version: 2 });
+    expect(result).toEqual({ probe: "applied", version: 3 });
   });
 
   it("rolls back schema statements when a future migration fails", async () => {
@@ -98,10 +98,10 @@ describe("Durable Object schemas", () => {
 
     const result = await runInDurableObject(channel, (_instance, state) => {
       expect(() =>
-        applySchemaMigrations(state.storage, 2, [
+        applySchemaMigrations(state.storage, 3, [
           {
-            fromVersion: 1,
-            toVersion: 2,
+            fromVersion: 2,
+            toVersion: 3,
             statements:
               "CREATE TABLE migration_probe(value TEXT NOT NULL); INSERT INTO table_that_does_not_exist(value) VALUES ('fail');",
           },
@@ -122,6 +122,6 @@ describe("Durable Object schemas", () => {
       };
     });
 
-    expect(result).toEqual({ probeTables: 0, version: 1 });
+    expect(result).toEqual({ probeTables: 0, version: 2 });
   });
 });

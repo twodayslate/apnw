@@ -375,6 +375,112 @@ describe("APNW HTTP API", () => {
     expect(conflict.status).toBe(409);
   });
 
+  it("passes arbitrary application data through a versioned APNs envelope", async () => {
+    const channelCapability = randomSecret();
+    const installationCapability = randomSecret();
+    await provision(channelCapability, randomSecret());
+    await call("/v1/apps/chain_of_custody/device", {
+      method: "PUT",
+      capability: channelCapability,
+      installationCapability,
+      json: {
+        installationID: randomSecret(),
+        deviceToken: "1234abcd",
+      },
+    });
+    const payloads: unknown[] = [];
+    vi.stubGlobal("fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+      payloads.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 200 });
+    });
+
+    const response = await publish(channelCapability, {
+      idempotencyKey: crypto.randomUUID(),
+      json: {
+        event: "check.response",
+        data: {
+          event_id: "event-123",
+          image: { record_id: "asset-456" },
+        },
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(payloads).toEqual([
+      {
+        aps: {
+          alert: {
+            title: "Chain of Custody",
+            body: "You have a new update.",
+          },
+          sound: "default",
+          "mutable-content": 1,
+        },
+        apnw: {
+          version: 1,
+          event: "check.response",
+          data: {
+            event_id: "event-123",
+            image: { record_id: "asset-456" },
+          },
+        },
+      },
+    ]);
+    vi.unstubAllGlobals();
+  });
+
+  it("binds canonical application data to the idempotency key", async () => {
+    const channelCapability = randomSecret();
+    await provision(channelCapability, randomSecret());
+    const idempotencyKey = crypto.randomUUID();
+    const eventCreatedAt = new Date().toISOString();
+    const first = await publish(channelCapability, {
+      idempotencyKey,
+      eventCreatedAt,
+      json: {
+        event: "app.changed",
+        data: { second: 2, first: 1 },
+      },
+    });
+    const reordered = await publish(channelCapability, {
+      idempotencyKey,
+      eventCreatedAt,
+      json: {
+        event: "app.changed",
+        data: { first: 1, second: 2 },
+      },
+    });
+    const conflict = await publish(channelCapability, {
+      idempotencyKey,
+      eventCreatedAt,
+      json: {
+        event: "app.changed",
+        data: { first: 1, second: 3 },
+      },
+    });
+
+    expect(first.status).toBe(200);
+    expect(reordered.status).toBe(200);
+    expect(conflict.status).toBe(409);
+  });
+
+  it("rejects application data that cannot fit in an APNs payload", async () => {
+    const channelCapability = randomSecret();
+    await provision(channelCapability, randomSecret());
+    const response = await publish(channelCapability, {
+      idempotencyKey: crypto.randomUUID(),
+      json: {
+        event: "app.changed",
+        data: { value: "x".repeat(4_096) },
+      },
+    });
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({
+      error: { code: "payload_too_large" },
+    });
+  });
+
   it("records the private target snapshot without exposing counts in the response", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const channelCapability = randomSecret();

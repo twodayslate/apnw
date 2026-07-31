@@ -1,9 +1,10 @@
 # APNW
 
-APNW is a privacy-minimizing APNs provider for native Apple apps. It accepts
-only checked-in event names, sends generic server-controlled notification copy,
-and keeps CloudKit records, user content, deep links, and collaboration metadata
-out of Cloudflare and APNs.
+APNW is a capability-authenticated APNs provider for native Apple apps. It
+sends a server-controlled fallback alert plus a versioned envelope containing
+an app-defined event name and JSON data. Applications can use opaque local
+identifiers or end-to-end encrypted values when their domain data must remain
+hidden from Cloudflare and APNs.
 
 This implementation includes:
 
@@ -88,8 +89,8 @@ fixed outbound request to Apple.
   custom domains, smoke tests, and rollback.
 - [docs/observability.md](docs/observability.md) — privacy boundary and incident
   runbook.
-- `src/apps.ts` — bundle IDs, App Attest policy, shard version, and fixed event
-  templates.
+- `src/apps.ts` — bundle IDs, App Attest policy, shard version, and generic
+  fallback alerts.
 - `src/appattest/` — bounded CBOR/authenticator and ASN.1 receipt parsing, X.509
   and PKCS#7 verification, challenges, key state, fraud policy, and assertion
   counters.
@@ -135,11 +136,9 @@ chain_of_custody: {
     },
   },
   provisioning: { shardCount: 256, shardVersion: 1 },
-  templates: {
-    submission_ready: {
-      title: "CoC update",
-      body: "A response is ready for review.",
-    },
+  notificationFallback: {
+    title: "Chain of Custody",
+    body: "You have a new update.",
   },
 }
 ```
@@ -148,8 +147,10 @@ Every valid `CFBundleVersion` is accepted. Move `extensionPolicy` to `required`
 only after the minimum supported OS always emits the Apple distribution
 extensions.
 
-Event templates must remain generic. APNW has no client-supplied title, body,
-route, deep link, identifier, image, action, or APNs-header field.
+The fallback alert must remain generic. Publishers may supply an event name and
+arbitrary JSON object under `data`; APNW places both inside its reserved `apnw`
+envelope and never allows a publisher to replace the Apple-reserved `aps`
+dictionary. The complete APNs payload is limited to 4,096 bytes.
 
 ## Verification
 
@@ -165,7 +166,8 @@ The Worker-runtime suite covers:
   counter, distribution-extension, and fraud-receipt parsing checks;
 - authorization separation for installation churn, sender exclusion, and
   closure;
-- seven-day idempotency behavior and count-free responses;
+- seven-day idempotency behavior, canonical app-data binding, and count-free
+  responses;
 - more than 40 recipients and multi-batch queue partitioning;
 - APNs environment fail-closed behavior, safe reason mapping, timestamp cleanup,
   repeated-token quarantine, and token-rotation races;

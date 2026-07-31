@@ -3,6 +3,7 @@ import { sendNotification, type ApnsReason, type ApnsResult } from "../apns/clie
 import { buildPayload } from "../apns/payload";
 import type { AppConfig } from "../apps";
 import { constantTimeEqual } from "../auth";
+import { parseStoredEventData } from "../event";
 import type { Env } from "../types";
 import { applySchemaMigrations } from "../storage/schema";
 import {
@@ -48,6 +49,7 @@ export interface PublishInput {
   app: AppConfig;
   appID: string;
   clientCreatedAt: number;
+  dataJSON?: string;
   event: string;
   excludeInstallationID?: string;
   excludeInstallationCapabilityDigest?: string;
@@ -444,13 +446,14 @@ export class ChannelObject extends DurableObject<Env> {
     const now = Date.now();
     sql.exec(
       `INSERT INTO events(
-        idempotency_key, app_id, request_fingerprint, event_name, client_created_at,
-        created_at, state, delivery_mode
-      ) VALUES (?, ?, ?, ?, ?, ?, 'accepted', 'direct')`,
+        idempotency_key, app_id, request_fingerprint, event_name, event_data,
+        client_created_at, created_at, state, delivery_mode
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'accepted', 'direct')`,
       input.idempotencyKey,
       input.appID,
       input.fingerprint,
       input.event,
+      input.dataJSON ?? "{}",
       input.clientCreatedAt,
       now,
     );
@@ -587,13 +590,17 @@ export class ChannelObject extends DurableObject<Env> {
       )
       .toArray();
     const event = sql
-      .exec<{ event_name: string }>(
-        "SELECT event_name FROM events WHERE idempotency_key = ?",
+      .exec<{ event_data: string; event_name: string }>(
+        "SELECT event_name, event_data FROM events WHERE idempotency_key = ?",
         eventID,
       )
       .toArray()[0];
     if (!event) return empty();
-    const payload = buildPayload(app, event.event_name);
+    const payload = buildPayload(
+      app,
+      event.event_name,
+      parseStoredEventData(event.event_data),
+    );
 
     let accepted = 0;
     let failed = ambiguousCount;

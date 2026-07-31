@@ -74,15 +74,16 @@ CloudKit-bound app event:
 
 - one random lowercase UUIDv4;
 - one RFC3339 creation timestamp;
-- fixed APNW event name;
+- application-defined APNW event name;
+- canonical JSON data, preferably only opaque local identifiers;
 - channel reference;
 - optional sender installation ID;
 - retry state.
 
-Every retry must reuse the exact UUID, timestamp, event, and exclusion. Delete
-the outbox row only after APNW accepts it. Retry transport failures and `429`,
-`5xx`, or queued acceptance with exponential backoff and jitter. Expire the row
-at 72 hours; never mint a new UUID for the same logical event.
+Every retry must reuse the exact UUID, timestamp, event, data, and exclusion.
+Delete the outbox row only after APNW accepts it. Retry transport failures and
+`429`, `5xx`, or queued acceptance with exponential backoff and jitter. Expire
+the row at 72 hours; never mint a new UUID for the same logical event.
 
 The Messages extension may write the local/CloudKit mutation and outbox row.
 The main app or an existing background synchronization path performs APNW
@@ -90,9 +91,13 @@ network delivery.
 
 ## Notification handling
 
-APNW alerts contain generic copy only. A tap opens the app's generic activity
-screen. The app then fetches authoritative CloudKit state and applies its normal
-authorization checks.
+APNW alerts contain generic fallback copy and set `mutable-content`. The
+versioned `apnw` envelope contains the event name and publisher-supplied data.
+A Notification Service Extension may use an opaque identifier from that data
+to resolve authorized App Group or CloudKit state, decrypt it locally, and
+replace the fallback copy or add an attachment.
 
-Do not expect a route, record name, pairing ID, role, decrypted text, or other
-domain data in the notification payload.
+The extension must tolerate missing, stale, revoked, or unavailable records and
+complete with the generic fallback before its execution deadline. Apply local
+privacy settings before decrypting or attaching sensitive media. Treat CloudKit
+as authoritative; notification data is an untrusted hint from a channel member.
