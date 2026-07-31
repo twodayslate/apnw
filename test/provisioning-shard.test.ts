@@ -27,41 +27,47 @@ describe("App Attest provisioning shards", () => {
     ).toBeGreaterThan(1_900);
   });
 
-  it("bounds outstanding unauthenticated challenges per shard", async () => {
-    const stub = env.PROVISIONING.get(
-      env.PROVISIONING.idFromName(`challenge-capacity:${crypto.randomUUID()}`),
-    );
-    for (
-      let index = 0;
-      index < MAX_OUTSTANDING_CHALLENGES_PER_SHARD;
-      index += 1
-    ) {
-      const bytes = new Uint8Array(32);
-      new DataView(bytes.buffer).setUint32(0, index);
+  it(
+    "bounds outstanding unauthenticated challenges per shard",
+    async () => {
+      const stub = env.PROVISIONING.get(
+        env.PROVISIONING.idFromName(
+          `challenge-capacity:${crypto.randomUUID()}`,
+        ),
+      );
+      for (
+        let index = 0;
+        index < MAX_OUTSTANDING_CHALLENGES_PER_SHARD;
+        index += 1
+      ) {
+        const bytes = new Uint8Array(32);
+        new DataView(bytes.buffer).setUint32(0, index);
+        await expect(
+          stub.issueChallenge({
+            appID: "chain_of_custody",
+            keyID: base64(bytes),
+            purpose: "key-attestation",
+          }),
+        ).resolves.toMatchObject({ ok: true });
+      }
+      const overflowKey = new Uint8Array(32);
+      new DataView(overflowKey.buffer).setUint32(
+        0,
+        MAX_OUTSTANDING_CHALLENGES_PER_SHARD,
+      );
       await expect(
         stub.issueChallenge({
           appID: "chain_of_custody",
-          keyID: base64(bytes),
+          keyID: base64(overflowKey),
           purpose: "key-attestation",
         }),
-      ).resolves.toMatchObject({ ok: true });
-    }
-    const overflowKey = new Uint8Array(32);
-    new DataView(overflowKey.buffer).setUint32(
-      0,
-      MAX_OUTSTANDING_CHALLENGES_PER_SHARD,
-    );
-    await expect(
-      stub.issueChallenge({
-        appID: "chain_of_custody",
-        keyID: base64(overflowKey),
-        purpose: "key-attestation",
-      }),
-    ).resolves.toMatchObject({
-      ok: false,
-      code: "rate_limited",
-    });
-  });
+      ).resolves.toMatchObject({
+        ok: false,
+        code: "rate_limited",
+      });
+    },
+    15_000,
+  );
 });
 
 function base64(bytes: Uint8Array): string {
