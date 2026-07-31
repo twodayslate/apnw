@@ -21,7 +21,6 @@ const app: AppConfig = {
       development: [3],
       production: [2, 4],
     },
-    allowedBundleVersions: ["1"],
   },
   provisioning: { shardCount: 256, shardVersion: 1 },
   templates: {

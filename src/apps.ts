@@ -12,7 +12,6 @@ export interface AppConfig {
       readonly development: readonly number[];
       readonly production: readonly number[];
     };
-    readonly allowedBundleVersions: readonly string[] | "any";
   };
   readonly provisioning: {
     readonly shardCount: number;
@@ -33,9 +32,6 @@ export const apps = {
         development: [3],
         production: [2, 4],
       },
-      // Accept every CFBundleVersion for this app. Use an explicit list when
-      // old or unreviewed builds must be prevented from provisioning channels.
-      allowedBundleVersions: "any",
     },
     provisioning: {
       shardCount: 256,

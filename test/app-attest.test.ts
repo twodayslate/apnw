@@ -31,7 +31,6 @@ const app: AppConfig = {
       development: [3],
       production: [2, 4],
     },
-    allowedBundleVersions: ["1"],
   },
   provisioning: { shardCount: 256, shardVersion: 1 },
   templates: {
@@ -124,7 +123,7 @@ describe("App Attest verifier", () => {
     ).rejects.toThrow("rejected");
   });
 
-  it("strictly enforces distribution extensions when present", async () => {
+  it("enforces distribution categories and accepts every bundle version", async () => {
     const pair = await ecKeyPair();
     const publicKeySpki = base64(
       new Uint8Array(await crypto.subtle.exportKey("spki", pair.publicKey)),
@@ -166,13 +165,7 @@ describe("App Attest verifier", () => {
     );
     await expect(
       verifyAssertion({
-        app: {
-          ...app,
-          appAttest: {
-            ...app.appAttest,
-            allowedBundleVersions: "any",
-          },
-        },
+        app,
         appAttestEnvironment: "development",
         assertion: anyBundleVersion,
         clientDataHash,
