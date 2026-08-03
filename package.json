@@ -16,11 +16,11 @@
     "types": "wrangler types"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "0.18.8",
-    "@cloudflare/workers-types": "5.20260726.1",
+    "@cloudflare/vitest-pool-workers": "0.19.1",
+    "@cloudflare/workers-types": "5.20260731.1",
     "typescript": "7.0.2",
     "vitest": "4.1.10",
-    "wrangler": "4.114.0"
+    "wrangler": "4.116.0"
   },
   "engines": {
     "node": ">=22"
