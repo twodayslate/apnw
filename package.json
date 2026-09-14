@@ -26,7 +26,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@peculiar/x509": "^2.0.0",
+    "@peculiar/x509": "^2.1.0",
     "asn1js": "^3.0.10",
     "cbor-x": "^1.6.4",
     "pkijs": "^3.4.0",
